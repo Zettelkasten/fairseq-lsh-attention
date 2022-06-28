@@ -7,6 +7,7 @@ import math
 from typing import Dict, List, Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn import Parameter
 
@@ -82,6 +83,10 @@ class MultiheadAttention(nn.Module):
         encoder_decoder_attention=False,
         q_noise=0.0,
         qn_block_size=8,
+        use_lsh: bool = False,
+        lsh_num_rounds: Optional[int] = None,
+        lsh_num_hashes: Optional[int] = None,
+        lsh_chunk_size: Optional[int] = None,
         # TODO: pass in config rather than string.
         # config defined in xformers.components.attention.AttentionConfig
         xformers_att_config: Optional[str] = None,
@@ -144,6 +149,9 @@ class MultiheadAttention(nn.Module):
         self.add_zero_attn = add_zero_attn
         self.beam_size = 1
         self.reset_parameters()
+
+        self.use_lsh = use_lsh
+        self.lsh_args = {"num_rounds": lsh_num_rounds, "num_hashes": lsh_num_hashes, "chunk_size": lsh_chunk_size}
 
         if self.use_xformers:
             xformers_att_config["dropout"] = xformers_att_config.get("dropout", dropout)
@@ -531,34 +539,62 @@ class MultiheadAttention(nn.Module):
             assert key is not None and value is not None
 
             if self.use_xformers:
+                assert not self.use_lsh, "not implemented"
                 return self._xformers_attn_forward(
                     query, key, value, key_padding_mask, need_weights, attn_mask
                 )
 
             else:
-                return lsh_attention.lsh_multi_head_attention_forward(
-                    query,
-                    key,
-                    value,
-                    self.embed_dim,
-                    self.num_heads,
-                    torch.empty([0]),
-                    torch.cat((self.q_proj.bias, self.k_proj.bias, self.v_proj.bias)),
-                    self.bias_k,
-                    self.bias_v,
-                    self.add_zero_attn,
-                    self.dropout_module.p,
-                    self.out_proj.weight,
-                    self.out_proj.bias,
-                    self.training or self.dropout_module.apply_during_inference,
-                    key_padding_mask,
-                    need_weights,
-                    attn_mask,
-                    use_separate_proj_weight=True,
-                    q_proj_weight=self.q_proj.weight,
-                    k_proj_weight=self.k_proj.weight,
-                    v_proj_weight=self.v_proj.weight,
-                )
+                if self.use_lsh:
+                    return lsh_attention.lsh_multi_head_attention_forward(
+                        query=query,
+                        key=key,
+                        value=value,
+                        embed_dim_to_check=self.embed_dim,
+                        num_heads=self.num_heads,
+                        in_proj_weight=torch.empty([0]),
+                        in_proj_bias=torch.cat((self.q_proj.bias, self.k_proj.bias, self.v_proj.bias)),
+                        bias_k=self.bias_k,
+                        bias_v=self.bias_v,
+                        add_zero_attn=self.add_zero_attn,
+                        dropout_p=self.dropout_module.p,
+                        out_proj_weight=self.out_proj.weight,
+                        out_proj_bias=self.out_proj.bias,
+                        training=self.training or self.dropout_module.apply_during_inference,
+                        key_padding_mask=key_padding_mask,
+                        need_weights=need_weights,
+                        attn_mask=attn_mask,
+                        use_separate_proj_weight=True,
+                        q_proj_weight=self.q_proj.weight,
+                        k_proj_weight=self.k_proj.weight,
+                        v_proj_weight=self.v_proj.weight,
+                        **self.lsh_args
+                    )
+                else:
+                    return F.multi_head_attention_forward(
+                        query,
+                        key,
+                        value,
+                        self.embed_dim,
+                        self.num_heads,
+                        torch.empty([0]),
+                        torch.cat((self.q_proj.bias, self.k_proj.bias, self.v_proj.bias)),
+                        self.bias_k,
+                        self.bias_v,
+                        self.add_zero_attn,
+                        self.dropout_module.p,
+                        self.out_proj.weight,
+                        self.out_proj.bias,
+                        self.training or self.dropout_module.apply_during_inference,
+                        key_padding_mask,
+                        need_weights,
+                        attn_mask,
+                        use_separate_proj_weight=True,
+                        q_proj_weight=self.q_proj.weight,
+                        k_proj_weight=self.k_proj.weight,
+                        v_proj_weight=self.v_proj.weight,
+                    )
+        assert not self.use_lsh, "not implemented"
 
         if incremental_state is not None:
             saved_state = self._get_input_buffer(incremental_state)

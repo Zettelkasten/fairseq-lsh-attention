@@ -8,6 +8,7 @@ from torch.overrides import has_torch_function, handle_torch_function
 
 
 def lsh_multi_head_attention_forward(
+    *,
     query: Tensor,
     key: Tensor,
     value: Tensor,
@@ -32,6 +33,9 @@ def lsh_multi_head_attention_forward(
     static_k: Optional[Tensor] = None,
     static_v: Optional[Tensor] = None,
     average_attn_weights: bool = True,
+    num_rounds: int,
+    num_hashes: int,
+    chunk_size: int,
 ) -> Tuple[Tensor, Optional[Tensor]]:
     r"""
     Args:

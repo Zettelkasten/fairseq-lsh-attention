@@ -63,3 +63,17 @@ class TransformerTestCase(unittest.TestCase):
         o, _ = model.forward(**sample["net_input"])
         loss = o.sum()
         loss.backward()
+
+
+class TransformerLshTestCase(unittest.TestCase):
+    def test_forward_backward(self):
+        model = mk_transformer(
+            encoder_embed_dim=12, decoder_embed_dim=12,
+            encoder_lsh_self_attn={"num_rounds": 2, "num_hashes": 4, "chunk_size": 10},
+            decoder_lsh_self_attn={"num_rounds": 2, "num_hashes": 4, "chunk_size": 10},
+            decoder_lsh_cross_attn={"num_rounds": 2, "num_hashes": 4, "chunk_size": 10},
+        )
+        sample = mk_sample()
+        o, _ = model.forward(**sample["net_input"])
+        loss = o.sum()
+        loss.backward()

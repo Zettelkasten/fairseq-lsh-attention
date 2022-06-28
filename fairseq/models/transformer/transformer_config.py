@@ -3,7 +3,6 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-
 import re
 from dataclasses import dataclass, field, fields
 from typing import List, Optional
@@ -20,6 +19,30 @@ DEFAULT_MAX_TARGET_POSITIONS = 1024
 DEFAULT_MIN_PARAMS_TO_WRAP = int(1e8)
 
 _NAME_PARSER = r"(decoder|encoder|quant_noise)_(.*)"
+
+
+@dataclass
+class LshAttentionConfig(FairseqDataclass):
+    num_rounds: int = field(
+        default=None, metadata={"help": "number of hash rounds"},
+    )
+    num_hashes: int = field(
+        default=None, metadata={"help": "number of hash classes"},
+    )
+    chunk_size: float = field(
+        default=None, metadata={"help": "size of each key/value and query chunk"},
+    )
+
+    @classmethod
+    def make_kwargs(cls, attn_cfg: Optional["LshAttentionConfig"]):
+        if attn_cfg is None:
+            return {"use_lsh": False}
+        dct = attn_cfg.__dict__
+        if "_name" in dct:
+            del dct["_name"]
+        dct = {f"lsh_{key}": value for key, value in dct.items()}
+        dct["use_lsh"] = True
+        return dct
 
 
 @dataclass
@@ -49,6 +72,9 @@ class EncDecBaseConfig(FairseqDataclass):
         default=None, metadata={"help": "which layers to *keep* when pruning"}
     )
 
+    # args for "Locality-Sensitive Hashing for Long Context Neural Machine Translation" (Petrick et al., 2022)
+    lsh_self_attn: Optional[LshAttentionConfig] = field(default=None)
+
     xformers_att_config: Optional[str] = field(
         default=None,
         metadata={
@@ -66,6 +92,10 @@ class DecoderConfig(EncDecBaseConfig):
             "help": "decoder output dimension (extra linear layer if different from decoder embed dim)"
         },
     )
+
+    # args for "Locality-Sensitive Hashing for Long Context Neural Machine Translation" (Petrick et al., 2022)
+    lsh_cross_attn: Optional[LshAttentionConfig] = field(default=None)
+
 
     def __post_init__(self):
         #  II doesn't work if we are just creating the object outside of hydra so fix that
@@ -262,10 +292,16 @@ class TransformerConfig(FairseqDataclass):
             args_key = f"{prefix}_{fld.name}"
             if safe_hasattr(args, args_key):
                 seen.add(args_key)
-                setattr(cfg, fld.name, safe_getattr(args, args_key))
-            if safe_hasattr(args, fld.name):
+                attr = safe_getattr(args, args_key)
+                if "lsh" in fld.name:
+                    attr = TransformerConfig._copy_keys(attr, LshAttentionConfig, fld.name, seen)
+                setattr(cfg, fld.name, attr)
+            elif safe_hasattr(args, fld.name):
                 seen.add(fld.name)
                 setattr(cfg, fld.name, safe_getattr(args, fld.name))
+            elif isinstance(args, dict) and fld.name in args:
+                seen.add(fld.name)
+                setattr(cfg, fld.name, args[fld.name])
         return cfg
 
     @classmethod
