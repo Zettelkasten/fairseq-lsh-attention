@@ -570,7 +570,7 @@ class MultiheadLshAttention(nn.Module):
             q.contiguous()
             .view(tgt_len, bsz * self.num_heads, self.head_dim)
             .transpose(0, 1)
-        )
+        )  # [batch*head, time, key_dim]
         kv_bsz = bsz  # need default value for scripting
         if k is not None:
             kv_bsz = k.size(1)
@@ -584,7 +584,7 @@ class MultiheadLshAttention(nn.Module):
                 v.contiguous()
                 .view(-1, kv_bsz * self.num_heads, self.head_dim)
                 .transpose(0, 1)
-            )
+            )  # [batch*head, time, value_dim]
 
         if saved_state is not None:
             # saved states are stored with shape (bsz, num_heads, seq_len, head_dim)
@@ -658,7 +658,7 @@ class MultiheadLshAttention(nn.Module):
             )
             attn_weights = attn_weights.reshape((-1,) + attn_weights.size()[-2:])
         else:
-            attn_weights = torch.bmm(q, k.transpose(1, 2))
+            attn_weights = torch.bmm(q, k.transpose(1, 2))  # [batch*head, query_time, key_time]
         attn_weights = self.apply_sparse_mask(attn_weights, tgt_len, src_len, bsz)
 
         assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len]
@@ -694,7 +694,7 @@ class MultiheadLshAttention(nn.Module):
 
         attn_weights_float = utils.softmax(
             attn_weights, dim=-1, onnx_trace=self.onnx_trace
-        )
+        )  # [batch*head, query_time, key_time]
         attn_weights = attn_weights_float.type_as(attn_weights)
         attn_probs = self.dropout_module(attn_weights)
 
@@ -720,7 +720,7 @@ class MultiheadLshAttention(nn.Module):
             )
             attn = attn.reshape((-1,) + attn.size()[-2:])
         else:
-            attn = torch.bmm(attn_probs, v)
+            attn = torch.bmm(attn_probs, v)  # [batch*head, query-time, value_dim]
         assert list(attn.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
         if self.onnx_trace and attn.size(1) == 1:
             # when ONNX tracing a single decoder step (sequence length == 1)
