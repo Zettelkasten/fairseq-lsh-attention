@@ -95,36 +95,6 @@ def lsh_multi_head_attention_forward(
           :math:`S` is the source sequence length. If ``average_weights=False``, returns attention weights per
           head of shape :math:`(num_heads, L, S)` when input is unbatched or :math:`(N, num_heads, L, S)`.
     """
-    tens_ops = (query, key, value, in_proj_weight, in_proj_bias, bias_k, bias_v, out_proj_weight, out_proj_bias)
-    if has_torch_function(tens_ops):
-        return handle_torch_function(
-            lsh_multi_head_attention_forward,
-            tens_ops,
-            query,
-            key,
-            value,
-            embed_dim_to_check,
-            num_heads,
-            in_proj_weight,
-            in_proj_bias,
-            bias_k,
-            bias_v,
-            add_zero_attn,
-            dropout_p,
-            out_proj_weight,
-            out_proj_bias,
-            training=training,
-            key_padding_mask=key_padding_mask,
-            need_weights=need_weights,
-            attn_mask=attn_mask,
-            use_separate_proj_weight=use_separate_proj_weight,
-            q_proj_weight=q_proj_weight,
-            k_proj_weight=k_proj_weight,
-            v_proj_weight=v_proj_weight,
-            static_k=static_k,
-            static_v=static_v,
-        )
-
     is_batched = F._mha_shape_check(query, key, value, key_padding_mask, attn_mask, num_heads)
 
     # For unbatched input, we unsqueeze at the expected batch-dim to pretend that the input
