@@ -4,6 +4,7 @@ from typing import Any, Dict, Sequence
 
 import torch
 from fairseq.models import transformer
+from fairseq.sequence_generator import SequenceGenerator
 
 from tests.test_roberta import FakeTask
 
@@ -66,7 +67,7 @@ class TransformerTestCase(unittest.TestCase):
 
 
 class TransformerLshTestCase(unittest.TestCase):
-    def test_forward_backward(self):
+    def test_forward_backward_generate(self):
         model = mk_transformer(
             encoder_embed_dim=12, decoder_embed_dim=12,
             encoder_lsh_self_attn={"num_rounds": 2, "num_hashes": 4, "chunk_size": 10},
@@ -74,6 +75,15 @@ class TransformerLshTestCase(unittest.TestCase):
             decoder_lsh_cross_attn={"num_rounds": 2, "num_hashes": 4, "chunk_size": 10},
         )
         sample = mk_sample()
+
+        # test forward pass
         o, _ = model.forward(**sample["net_input"])
+
+        # test backward pass
         loss = o.sum()
         loss.backward()
+
+        # test beam search
+        task = FakeTask(args={})
+        generator = SequenceGenerator([model], task.dictionary, beam_size=3)
+        hypos = generator.forward(sample)
