@@ -63,10 +63,10 @@ def _mask_for_xformers(mask: Tensor, to_dtype: Optional[torch.dtype] = None):
 
 
 @with_incremental_state
-class MultiheadAttention(nn.Module):
-    """Multi-headed attention.
+class MultiheadLshAttention(nn.Module):
+    """Multi-headed locality-sensitive hashing attention.
 
-    See "Attention Is All You Need" for more details.
+    See "Locality-Sensitive Hashing for Long Context Neural Machine Translation" (Petrick et al., 2022)
     """
 
     def __init__(
