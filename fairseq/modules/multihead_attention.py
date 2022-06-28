@@ -7,9 +7,10 @@ import math
 from typing import Dict, List, Optional, Tuple
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn import Parameter
+
+from fairseq.modules import lsh_attention
 
 try:
     from xformers.components.attention import build_attention
@@ -535,7 +536,7 @@ class MultiheadAttention(nn.Module):
                 )
 
             else:
-                return F.multi_head_attention_forward(
+                return lsh_attention.lsh_multi_head_attention_forward(
                     query,
                     key,
                     value,
