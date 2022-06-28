@@ -11,9 +11,9 @@ from torch import Tensor
 
 from fairseq import utils
 from fairseq.models.transformer import TransformerConfig
-from fairseq.models.transformer.transformer_config import LshAttentionConfig
 from fairseq.modules import LayerNorm, MultiheadAttention
 from fairseq.modules.fairseq_dropout import FairseqDropout
+from fairseq.modules.multihead_lsh_attention import MultiheadLshAttention
 from fairseq.modules.quant_noise import quant_noise
 
 
@@ -249,7 +249,9 @@ class TransformerEncoderLayerBase(nn.Module):
         self.fc2.bias = torch.nn.Parameter(new_fc2_bias)
 
     def build_self_attention(self, embed_dim, cfg):
-        return MultiheadAttention(
+        use_lsh = cfg.decoder.lsh_self_attn is not None
+        att_cls = MultiheadLshAttention if use_lsh else MultiheadAttention
+        return att_cls(
             embed_dim,
             cfg.encoder.attention_heads,
             dropout=cfg.attention_dropout,
@@ -257,7 +259,7 @@ class TransformerEncoderLayerBase(nn.Module):
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
             xformers_att_config=cfg.encoder.xformers_att_config,
-            **LshAttentionConfig.make_kwargs(cfg.encoder.lsh_self_attn),
+            **(cfg.encoder.lsh_self_attn.as_dict() if use_lsh else {}),
         )
 
     def residual_connection(self, x, residual):
@@ -506,7 +508,9 @@ class TransformerDecoderLayerBase(nn.Module):
     def build_self_attention(
         self, embed_dim, cfg, add_bias_kv=False, add_zero_attn=False
     ):
-        return MultiheadAttention(
+        use_lsh = cfg.decoder.lsh_self_attn is not None
+        att_cls = MultiheadLshAttention if use_lsh else MultiheadAttention
+        return att_cls(
             embed_dim,
             cfg.decoder.attention_heads,
             dropout=cfg.attention_dropout,
@@ -516,11 +520,13 @@ class TransformerDecoderLayerBase(nn.Module):
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
             xformers_att_config=cfg.decoder.xformers_att_config,
-            **LshAttentionConfig.make_kwargs(cfg.decoder.lsh_self_attn),
+            **(cfg.decoder.lsh_self_attn.as_dict() if use_lsh else {}),
         )
 
     def build_encoder_attention(self, embed_dim, cfg):
-        return MultiheadAttention(
+        use_lsh = cfg.decoder.lsh_self_attn is not None
+        att_cls = MultiheadLshAttention if use_lsh else MultiheadAttention
+        return att_cls(
             embed_dim,
             cfg.decoder.attention_heads,
             kdim=cfg.encoder.embed_dim,
@@ -530,7 +536,7 @@ class TransformerDecoderLayerBase(nn.Module):
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
             xformers_att_config=cfg.encoder.xformers_att_config,
-            **LshAttentionConfig.make_kwargs(cfg.decoder.lsh_cross_attn),
+            **(cfg.decoder.lsh_cross_attn.as_dict() if use_lsh else {}),
         )
 
     def prepare_for_onnx_export_(self):

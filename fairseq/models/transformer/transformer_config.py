@@ -33,15 +33,10 @@ class LshAttentionConfig(FairseqDataclass):
         default=None, metadata={"help": "size of each key/value and query chunk"},
     )
 
-    @classmethod
-    def make_kwargs(cls, attn_cfg: Optional["LshAttentionConfig"]):
-        if attn_cfg is None:
-            return {"use_lsh": False}
-        dct = attn_cfg.__dict__
+    def as_dict(self):
+        dct = self.__dict__
         if "_name" in dct:
             del dct["_name"]
-        dct = {f"lsh_{key}": value for key, value in dct.items()}
-        dct["use_lsh"] = True
         return dct
 
 

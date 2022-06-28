@@ -73,6 +73,7 @@ class MultiheadLshAttention(nn.Module):
         self,
         embed_dim,
         num_heads,
+        *,
         kdim=None,
         vdim=None,
         dropout=0.0,
@@ -92,6 +93,9 @@ class MultiheadLshAttention(nn.Module):
         xformers_blocksparse_blocksize: Optional[
             int
         ] = 16,  # This should be part of the config
+        num_rounds: int,
+        num_hashes: int,
+        chunk_size: int
     ):
         super().__init__()
 
@@ -145,9 +149,6 @@ class MultiheadLshAttention(nn.Module):
         self.add_zero_attn = add_zero_attn
         self.beam_size = 1
         self.reset_parameters()
-
-        self.use_lsh = use_lsh
-        self.lsh_args = {"num_rounds": lsh_num_rounds, "num_hashes": lsh_num_hashes, "chunk_size": lsh_chunk_size}
 
         if self.use_xformers:
             xformers_att_config["dropout"] = xformers_att_config.get("dropout", dropout)
@@ -518,54 +519,6 @@ class MultiheadLshAttention(nn.Module):
                 assert value is not None
                 assert src_len, key_bsz == value.shape[:2]
 
-        if (
-            not self.onnx_trace
-            and not is_tpu  # don't use PyTorch version on TPUs
-            and incremental_state is None
-            and not static_kv
-            # A workaround for quantization to work. Otherwise JIT compilation
-            # treats bias in linear module as method.
-            and not torch.jit.is_scripting()
-            # The Multihead attention implemented in pytorch forces strong dimension check
-            # for input embedding dimention and K,Q,V projection dimension.
-            # Since pruning will break the dimension check and it is not easy to modify the pytorch API,
-            # it is preferred to bypass the pytorch MHA when we need to skip embed_dim_check
-            and not self.skip_embed_dim_check
-        ):
-            assert key is not None and value is not None
-
-            if self.use_xformers:
-                assert not self.use_lsh, "not implemented"
-                return self._xformers_attn_forward(
-                    query, key, value, key_padding_mask, need_weights, attn_mask
-                )
-
-            else:
-                return F.multi_head_attention_forward(
-                    query,
-                    key,
-                    value,
-                    self.embed_dim,
-                    self.num_heads,
-                    torch.empty([0]),
-                    torch.cat((self.q_proj.bias, self.k_proj.bias, self.v_proj.bias)),
-                    self.bias_k,
-                    self.bias_v,
-                    self.add_zero_attn,
-                    self.dropout_module.p,
-                    self.out_proj.weight,
-                    self.out_proj.bias,
-                    self.training or self.dropout_module.apply_during_inference,
-                    key_padding_mask,
-                    need_weights,
-                    attn_mask,
-                    use_separate_proj_weight=True,
-                    q_proj_weight=self.q_proj.weight,
-                    k_proj_weight=self.k_proj.weight,
-                    v_proj_weight=self.v_proj.weight,
-                )
-        assert not self.use_lsh, "not implemented"
-
         if incremental_state is not None:
             saved_state = self._get_input_buffer(incremental_state)
             if saved_state is not None and "prev_key" in saved_state:
@@ -662,7 +615,7 @@ class MultiheadLshAttention(nn.Module):
             if "prev_key_padding_mask" in saved_state:
                 prev_key_padding_mask = saved_state["prev_key_padding_mask"]
             assert k is not None and v is not None
-            key_padding_mask = MultiheadAttention._append_prev_key_padding_mask(
+            key_padding_mask = self._append_prev_key_padding_mask(
                 key_padding_mask=key_padding_mask,
                 prev_key_padding_mask=prev_key_padding_mask,
                 batch_size=kv_bsz,

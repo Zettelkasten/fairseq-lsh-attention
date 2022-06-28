@@ -146,9 +146,6 @@ class MultiheadAttention(nn.Module):
         self.beam_size = 1
         self.reset_parameters()
 
-        self.use_lsh = use_lsh
-        self.lsh_args = {"num_rounds": lsh_num_rounds, "num_hashes": lsh_num_hashes, "chunk_size": lsh_chunk_size}
-
         if self.use_xformers:
             xformers_att_config["dropout"] = xformers_att_config.get("dropout", dropout)
             xformers_att_config["num_heads"] = xformers_att_config.get(
@@ -535,7 +532,6 @@ class MultiheadAttention(nn.Module):
             assert key is not None and value is not None
 
             if self.use_xformers:
-                assert not self.use_lsh, "not implemented"
                 return self._xformers_attn_forward(
                     query, key, value, key_padding_mask, need_weights, attn_mask
                 )
@@ -564,7 +560,6 @@ class MultiheadAttention(nn.Module):
                     k_proj_weight=self.k_proj.weight,
                     v_proj_weight=self.v_proj.weight,
                 )
-        assert not self.use_lsh, "not implemented"
 
         if incremental_state is not None:
             saved_state = self._get_input_buffer(incremental_state)
