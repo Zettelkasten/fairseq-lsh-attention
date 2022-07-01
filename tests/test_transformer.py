@@ -68,16 +68,26 @@ class TransformerTestCase(unittest.TestCase):
 
 class TransformerLshTestCase(unittest.TestCase):
     def test_forward_backward_generate(self):
+        num_heads = 5
+        model_dim = num_heads * 3
+        num_rounds = 1
+        beam_size = 7
+        num_hashes = 4
+        chunk_size = 10
         model = mk_transformer(
-            encoder_embed_dim=12, decoder_embed_dim=12,
-            encoder_lsh_self_attn={"num_rounds": 2, "num_hashes": 4, "chunk_size": 10},
-            decoder_lsh_self_attn={"num_rounds": 2, "num_hashes": 4, "chunk_size": 10},
-            decoder_lsh_cross_attn={"num_rounds": 2, "num_hashes": 4, "chunk_size": 10},
+            encoder_layers=1, decoder_layers=1,
+            encoder_embed_dim=model_dim, decoder_embed_dim=model_dim,
+            encoder_attention_heads=num_heads,
+            decoder_attention_heads=num_heads,
+            encoder_lsh_self_attn={"num_rounds": num_rounds, "num_hashes": num_hashes, "chunk_size": chunk_size},
+            decoder_lsh_self_attn={"num_rounds": num_rounds, "num_hashes": num_hashes, "chunk_size": chunk_size},
+            decoder_lsh_cross_attn={"num_rounds": num_rounds, "num_hashes": num_hashes, "chunk_size": chunk_size},
         )
-        sample = mk_sample()
+        sample = mk_sample(batch_size=2)
 
         # test forward pass
         o, _ = model.forward(**sample["net_input"])
+        print(f"Output is: {o}")
 
         # test backward pass
         loss = o.sum()
@@ -85,5 +95,6 @@ class TransformerLshTestCase(unittest.TestCase):
 
         # test beam search
         task = FakeTask(args={})
-        generator = SequenceGenerator([model], task.dictionary, beam_size=3)
+        generator = SequenceGenerator([model], task.dictionary, beam_size=beam_size)
         hypos = generator.forward(sample)
+        print(f"Hypotheses are: {hypos}")
