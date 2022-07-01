@@ -9,20 +9,19 @@ from fairseq.sequence_generator import SequenceGenerator
 from tests.test_roberta import FakeTask
 
 
-def mk_sample(tok: Sequence[int] = None, batch_size: int = 2) -> Dict[str, Any]:
-    if not tok:
-        tok = [10, 11, 12, 13, 14, 15, 2]
+def mk_sample(num_batch: int = 2, max_length: int = 7) -> Dict[str, Any]:
+    torch.manual_seed(42)
+    src_lengths = torch.randint(low=3, high=max_length, size=(num_batch,))
+    tokens = torch.stack([torch.arange(2, max_length + 2, dtype=torch.long)] * num_batch)
+    tokens = torch.where(torch.arange(max_length).view(1, -1) < src_lengths.view(-1, 1), tokens, 1)
 
-    batch = torch.stack([torch.tensor(tok, dtype=torch.long)] * batch_size)
     sample = {
         "net_input": {
-            "src_tokens": batch,
-            "prev_output_tokens": batch,
-            "src_lengths": torch.tensor(
-                [len(tok)] * batch_size, dtype=torch.long, device=batch.device
-            ),
+            "src_tokens": tokens,
+            "prev_output_tokens": tokens,
+            "src_lengths": src_lengths,
         },
-        "target": batch[:, 1:],
+        "target": tokens[:, 1:],
     }
     return sample
 
@@ -83,7 +82,7 @@ class TransformerLshTestCase(unittest.TestCase):
             decoder_lsh_self_attn={"num_rounds": num_rounds, "num_hashes": num_hashes, "chunk_size": chunk_size},
             decoder_lsh_cross_attn={"num_rounds": num_rounds, "num_hashes": num_hashes, "chunk_size": chunk_size},
         )
-        sample = mk_sample(batch_size=2)
+        sample = mk_sample(num_batch=2)
 
         # test forward pass
         o, _ = model.forward(**sample["net_input"])
