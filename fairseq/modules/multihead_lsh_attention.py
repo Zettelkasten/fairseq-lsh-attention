@@ -287,7 +287,7 @@ class MultiheadLshAttention(nn.Module):
         q_sorted = q_sorted.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
         k_sorted = k_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
         v_sorted = v_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
-        k_pad_mask_sorted = k_pad_mask_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, 1, 1)
+        k_pad_mask_sorted = k_pad_mask_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
         k_sorted = k_sorted.expand(num_key_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
         v_sorted = v_sorted.expand(num_key_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
         k_pad_mask_sorted = k_pad_mask_sorted.expand(num_key_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
@@ -316,7 +316,7 @@ class MultiheadLshAttention(nn.Module):
         assert tuple(energy_sorted.size()) == (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.num_chunk_offsets, self.chunk_size)  # noqa
 
         energy_sorted += chunk_align_mask
-        energy_sorted += stacked_k_pad_mask_sorted.permute(0, 3, 4, 5, 1, 2).unsqueeze(2)
+        energy_sorted += stacked_k_pad_mask_sorted.permute(0, 3, 4, 5, 1, 2).unsqueeze(1)
 
         energy_sorted_flat = energy_sorted.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.num_chunk_offsets * self.chunk_size)  # noqa
         energy_lse_sorted = torch.logsumexp(energy_sorted_flat, dim=-1, keepdim=False)
@@ -326,7 +326,7 @@ class MultiheadLshAttention(nn.Module):
 
         round_out_sorted = torch.einsum("cibrnoj,cojbrnf->cibrnf", dropped_weights_sorted, stacked_v_sorted)
         assert tuple(round_out_sorted.size()) == (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
-        round_out_sorted = round_out_sorted.view(num_query_chunks * self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
+        round_out_sorted = round_out_sorted.reshape(num_query_chunks * self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
 
         index_range = torch.arange(0, num_queries).view(num_queries, 1, 1, 1).expand_as(q_sort_indices)
         q_inv_indices = q_sort_indices.new_empty(size=()).expand(num_queries, num_batch, self.num_rounds, self.num_heads)
