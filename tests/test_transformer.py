@@ -173,12 +173,12 @@ class TransformerLshTestCase(unittest.TestCase):
                 "num_batch": 3, "num_time": 10, "dynamic_time": False
             },
             "single_round_causal": {
-                "num_heads": 8, "kv_dim": 64, "num_rounds": 1, "num_hashes": 16, "chunk_size": 5,
+                "num_heads": 8, "kv_dim": 64, "num_rounds": 1, "num_hashes": 16, "chunk_size": 10,
                 "self_attention": True, "causal": True,
                 "num_batch": 3, "num_time": 10, "dynamic_time": False
             },
             "multi_round_causal": {
-                "num_heads": 8, "kv_dim": 64, "num_rounds": 6, "num_hashes": 16, "chunk_size": 5,
+                "num_heads": 8, "kv_dim": 64, "num_rounds": 6, "num_hashes": 16, "chunk_size": 10,
                 "self_attention": True, "causal": True,
                 "num_batch": 3, "num_time": 10, "dynamic_time": False
             },
@@ -186,6 +186,7 @@ class TransformerLshTestCase(unittest.TestCase):
 
         for case_name, case_params in cases.items():
             with self.subTest(msg=case_name, **case_params):
+                print(f"=== Executing {case_name}")
                 print(f"Params: {case_params}")
                 full_out, lsh_out = run_full_and_lsh(**case_params)
                 print(f"Lsh att output: {lsh_out}")

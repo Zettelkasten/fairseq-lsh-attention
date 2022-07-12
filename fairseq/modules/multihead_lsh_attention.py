@@ -119,7 +119,6 @@ class MultiheadLshAttention(nn.Module):
         assert num_hashes % 2 == 0, "num_hashes must be divisible by 2"
         self.num_hashes = num_hashes
         self.chunk_size = chunk_size
-        self.num_chunk_offsets = 3
 
         self.self_attention = self_attention
         self.encoder_decoder_attention = encoder_decoder_attention
@@ -221,6 +220,11 @@ class MultiheadLshAttention(nn.Module):
         assert tuple(key.size()) == (num_keys, num_batch, self.embed_dim)
         assert tuple(value.size()) == (num_keys, num_batch, self.embed_dim)
 
+        # Warning: We do not want to use attn_mask itself, as this requires O(T^2) memory itself.
+        # Instead, we just assume that it is used for causal masking and nothing else.
+        causal = attn_mask is not None
+        num_chunk_offsets = 2 if causal else 3
+
         q: torch.Tensor = self.q_proj(query)  # [query-time, batch, head * key-dim]
         if self.share_kq:
             assert num_queries == num_keys
@@ -297,46 +301,44 @@ class MultiheadLshAttention(nn.Module):
         v_sorted = v_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
         k_mask_sorted = k_mask_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
         k_sort_indices = k_sort_indices.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
-        k_sorted = k_sorted.expand(num_key_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
-        v_sorted = v_sorted.expand(num_key_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
-        k_mask_sorted = k_mask_sorted.expand(num_key_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
-        k_sort_indices = k_sort_indices.expand(num_key_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+        k_sorted = k_sorted.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
+        v_sorted = v_sorted.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
+        k_mask_sorted = k_mask_sorted.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+        k_sort_indices = k_sort_indices.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
 
         chunk_align = torch.arange(num_query_chunks, dtype=torch.int64).view(num_query_chunks, 1)  # (num_query_chunks, offset)  # noqa
-        chunk_align = chunk_align + torch.tensor([-1, 0, 1], dtype=torch.int64).view(1, self.num_chunk_offsets)
+        chunk_align = chunk_align + torch.arange(start=-1, end=num_chunk_offsets - 1, dtype=torch.int64).view(1, num_chunk_offsets)  # noqa
         chunk_align_mask = torch.where(torch.logical_or(chunk_align.lt(torch.tensor(0)), chunk_align.gt(num_query_chunks - 1)), float("-inf"), 0.0)  # (num_query_chunks, offset)  # noqa
-        assert tuple(chunk_align_mask.size()) == (num_query_chunks, self.num_chunk_offsets)
-        chunk_align_mask = chunk_align_mask.view(num_query_chunks, 1, 1, 1, 1, self.num_chunk_offsets, 1)
+        assert tuple(chunk_align_mask.size()) == (num_query_chunks, num_chunk_offsets)
+        chunk_align_mask = chunk_align_mask.view(num_query_chunks, 1, 1, 1, 1, num_chunk_offsets, 1)
 
         chunk_align = chunk_align.clamp(0, num_query_chunks - 1)
-        chunk_align = chunk_align.view(num_query_chunks, self.num_chunk_offsets, 1, 1, 1, 1)
-        chunk_align = chunk_align.expand(num_query_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
-        chunk_align_k = chunk_align.unsqueeze(-1).expand(num_query_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
-        chunk_align_v = chunk_align.unsqueeze(-1).expand(num_query_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
+        chunk_align = chunk_align.view(num_query_chunks, num_chunk_offsets, 1, 1, 1, 1)
+        chunk_align = chunk_align.expand(num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+        chunk_align_k = chunk_align.unsqueeze(-1).expand(num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
+        chunk_align_v = chunk_align.unsqueeze(-1).expand(num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
 
         stacked_k_sorted = k_sorted.gather(dim=0, index=chunk_align_k)
         stacked_v_sorted = v_sorted.gather(dim=0, index=chunk_align_v)
         stacked_k_mask_sorted = k_mask_sorted.gather(dim=0, index=chunk_align)
         stacked_k_sort_indices = k_sort_indices.gather(dim=0, index=chunk_align)
-        assert tuple(stacked_k_sorted.size()) == (num_query_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
-        assert tuple(stacked_v_sorted.size()) == (num_query_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
-        assert tuple(stacked_k_mask_sorted.size()) == (num_query_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
-        assert tuple(stacked_k_sort_indices.size()) == (num_query_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+        assert tuple(stacked_k_sorted.size()) == (num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
+        assert tuple(stacked_v_sorted.size()) == (num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
+        assert tuple(stacked_k_mask_sorted.size()) == (num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+        assert tuple(stacked_k_sort_indices.size()) == (num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
 
         # TODO: masking :)
         energy_sorted = torch.einsum("cibrnf,cojbrnf->cibrnoj", q_sorted, stacked_k_sorted)
-        assert tuple(energy_sorted.size()) == (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.num_chunk_offsets, self.chunk_size)  # noqa
+        assert tuple(energy_sorted.size()) == (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, num_chunk_offsets, self.chunk_size)  # noqa
 
         energy_sorted += chunk_align_mask
         energy_sorted += stacked_k_mask_sorted.permute(0, 3, 4, 5, 1, 2).unsqueeze(1)
 
-        if attn_mask is not None:
-            # Warning: We do not want to use attn_mask itself, as this requires O(T^2) memory itself.
-            # Instead, we just assume that it is used for causal masking and nothing else.
+        if causal:
             causal_mask = torch.where(stacked_k_sort_indices.permute(0, 3, 4, 5, 1, 2).unsqueeze(1).gt(q_sort_indices.unsqueeze(5).unsqueeze(-1)), float("-inf"), 0.0)
             energy_sorted += causal_mask
 
-        energy_sorted_flat = energy_sorted.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.num_chunk_offsets * self.chunk_size)  # noqa
+        energy_sorted_flat = energy_sorted.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, num_chunk_offsets * self.chunk_size)  # noqa
         energy_lse_sorted = torch.logsumexp(energy_sorted_flat, dim=-1, keepdim=False)
         weights_sorted = torch.exp(energy_sorted - energy_lse_sorted.unsqueeze(-1).unsqueeze(-1))
         dropped_weights_sorted = self.dropout_module(weights_sorted)
