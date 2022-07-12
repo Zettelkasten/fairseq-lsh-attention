@@ -96,7 +96,8 @@ class MultiheadLshAttention(nn.Module):
         share_kq: Optional[bool] = None,
         num_rounds: int,
         num_hashes: int,
-        chunk_size: int
+        chunk_size: int,
+        mask_different_hashes: bool = True
     ):
         super().__init__()
 
@@ -119,6 +120,7 @@ class MultiheadLshAttention(nn.Module):
         assert num_hashes % 2 == 0, "num_hashes must be divisible by 2"
         self.num_hashes = num_hashes
         self.chunk_size = chunk_size
+        self.mask_different_hashes = mask_different_hashes
 
         self.self_attention = self_attention
         self.encoder_decoder_attention = encoder_decoder_attention
@@ -192,6 +194,7 @@ class MultiheadLshAttention(nn.Module):
         attn_mask: Optional[Tensor] = None,
         before_softmax: bool = False,
         need_head_weights: bool = False,
+        override_hashes: Optional[torch.Tensor] = None,
     ) -> Tuple[Tensor, Optional[Tensor]]:
         """Input shape: Time x Batch x Channel
 
@@ -254,6 +257,10 @@ class MultiheadLshAttention(nn.Module):
         q_hashes = apply_hash(q, None)
         k_hashes = apply_hash(k, key_padding_mask)
 
+        if override_hashes is not None:
+            assert tuple(override_hashes.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)
+            q_hashes, k_hashes = override_hashes, override_hashes
+
         q_hashes_sorted, q_sort_indices = torch.sort(q_hashes, dim=0, stable=True)
         k_hashes_sorted, k_sort_indices = torch.sort(k_hashes, dim=0, stable=True)
 
@@ -288,23 +295,28 @@ class MultiheadLshAttention(nn.Module):
         num_key_chunks = self._ceildiv(num_keys, self.chunk_size)
 
         q_sorted = F.pad(q_sorted, (0, 0) * 4 + (0, num_query_chunks * self.chunk_size - num_queries))
+        q_sort_indices = F.pad(q_sort_indices, (0, 0) * 3 + (0, num_query_chunks * self.chunk_size - num_queries))
+        q_hashes_sorted = F.pad(q_hashes_sorted, (0, 0) * 3 + (0, num_query_chunks * self.chunk_size - num_queries), value=-1)
         k_sorted = F.pad(k_sorted, (0, 0) * 4 + (0, num_key_chunks * self.chunk_size - num_keys))
         v_sorted = F.pad(v_sorted, (0, 0) * 4 + (0, num_key_chunks * self.chunk_size - num_keys))
         k_mask_sorted = F.pad(k_mask_sorted, (0, 0) * 3 + (0, num_key_chunks * self.chunk_size - num_keys), value=float("-inf"))  # noqa
-        q_sort_indices = F.pad(q_sort_indices, (0, 0) * 3 + (0, num_query_chunks * self.chunk_size - num_queries))
-        k_sort_indices = F.pad(k_sort_indices, (0, 0) * 3 + (0, num_key_chunks* self.chunk_size - num_keys))
+        k_sort_indices = F.pad(k_sort_indices, (0, 0) * 3 + (0, num_key_chunks * self.chunk_size - num_keys))
+        k_hashes_sorted = F.pad(k_hashes_sorted, (0, 0) * 3 + (0, num_key_chunks * self.chunk_size - num_keys), value=-1)
 
         # chunking
         q_sorted = q_sorted.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
         q_sort_indices = q_sort_indices.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+        q_hashes_sorted = q_hashes_sorted.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
         k_sorted = k_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
         v_sorted = v_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
         k_mask_sorted = k_mask_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
         k_sort_indices = k_sort_indices.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+        k_hashes_sorted = k_hashes_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
         k_sorted = k_sorted.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
         v_sorted = v_sorted.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
         k_mask_sorted = k_mask_sorted.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
         k_sort_indices = k_sort_indices.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+        k_hashes_sorted = k_hashes_sorted.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
 
         chunk_align = torch.arange(num_query_chunks, dtype=torch.int64).view(num_query_chunks, 1)  # (num_query_chunks, offset)  # noqa
         chunk_align = chunk_align + torch.arange(start=-1, end=num_chunk_offsets - 1, dtype=torch.int64).view(1, num_chunk_offsets)  # noqa
@@ -322,10 +334,12 @@ class MultiheadLshAttention(nn.Module):
         stacked_v_sorted = v_sorted.gather(dim=0, index=chunk_align_v)
         stacked_k_mask_sorted = k_mask_sorted.gather(dim=0, index=chunk_align)
         stacked_k_sort_indices = k_sort_indices.gather(dim=0, index=chunk_align)
+        stacked_k_hashes_sorted = k_hashes_sorted.gather(dim=0, index=chunk_align)
         assert tuple(stacked_k_sorted.size()) == (num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
         assert tuple(stacked_v_sorted.size()) == (num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
         assert tuple(stacked_k_mask_sorted.size()) == (num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
         assert tuple(stacked_k_sort_indices.size()) == (num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+        assert tuple(stacked_k_hashes_sorted.size()) == (num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
 
         # TODO: masking :)
         energy_sorted = torch.einsum("cibrnf,cojbrnf->cibrnoj", q_sorted, stacked_k_sorted)
@@ -335,8 +349,12 @@ class MultiheadLshAttention(nn.Module):
         energy_sorted += stacked_k_mask_sorted.permute(0, 3, 4, 5, 1, 2).unsqueeze(1)
 
         if causal:
-            causal_mask = torch.where(stacked_k_sort_indices.permute(0, 3, 4, 5, 1, 2).unsqueeze(1).gt(q_sort_indices.unsqueeze(5).unsqueeze(-1)), float("-inf"), 0.0)
+            causal_mask = torch.where(stacked_k_sort_indices.permute(0, 3, 4, 5, 1, 2).unsqueeze(1).gt(q_sort_indices.unsqueeze(5).unsqueeze(-1)), float("-inf"), 0.0)  # noqa
             energy_sorted += causal_mask
+
+        if self.mask_different_hashes:
+            hash_mask = torch.where(stacked_k_hashes_sorted.permute(0, 3, 4, 5, 1, 2).unsqueeze(1).ne(q_hashes_sorted.unsqueeze(5).unsqueeze(-1)), -10.0**8, 0.0)  # noqa
+            energy_sorted += hash_mask
 
         energy_sorted_flat = energy_sorted.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, num_chunk_offsets * self.chunk_size)  # noqa
         energy_lse_sorted = torch.logsumexp(energy_sorted_flat, dim=-1, keepdim=False)
