@@ -117,7 +117,7 @@ class TransformerLshTestCase(unittest.TestCase):
             lsh_att = MultiheadLshAttention(
                 embed_dim=embed_dim, num_heads=num_heads, self_attention=self_attention,
                 num_rounds=num_rounds, num_hashes=num_hashes, chunk_size=chunk_size,
-                share_kq=False
+                share_kq=False, mask_different_hashes=False
             )
             lsh_att.q_proj = full_att.q_proj
             lsh_att.k_proj = full_att.k_proj
@@ -193,3 +193,52 @@ class TransformerLshTestCase(unittest.TestCase):
                 print(f"Full att output: {full_out}")
                 assert lsh_out.shape == full_out.shape
                 torch.testing.assert_allclose(lsh_out, full_out)
+
+    def test_lsh_attention_hashing(self):
+
+        def do_test(hash_sequence, chunk_size, causal, num_hashes=42):
+            hash_sequence = torch.tensor(hash_sequence)
+            assert len(hash_sequence.shape) in [3, 4], "[batch,head,time] or [batch,round,head,time]"
+            if len(hash_sequence.shape) == 3:
+                hash_sequence = hash_sequence.unsqueeze(1)
+            num_batch, num_heads, num_rounds, num_time = hash_sequence.shape
+            feat_dim = num_time
+            embed_dim = num_heads * feat_dim
+
+            qkv = torch.zeros(num_time, num_batch, num_rounds, num_heads, feat_dim)
+            for t in range(num_time):
+                qkv[t, :, :, :, t] = 1.0
+            qkv = qkv.view(num_time, num_batch, embed_dim)
+
+            lsh_att = MultiheadLshAttention(
+                embed_dim=embed_dim, num_heads=num_heads, self_attention=True,
+                num_rounds=num_rounds, num_hashes=num_hashes, chunk_size=chunk_size,
+                share_kq=True
+            )
+
+            lsh_att.q_proj = torch.nn.Identity()
+            lsh_att.k_proj = torch.nn.Identity()
+            lsh_att.v_proj = torch.nn.Identity()
+            lsh_att.out_proj = torch.nn.Identity()
+
+            attn_mask = True if causal else None
+            lsh_out, _ = lsh_att(
+                query=qkv, key=qkv, value=qkv, need_weights=False, attn_mask=attn_mask,
+                override_hashes=hash_sequence.permute(3, 0, 1, 2))
+
+            print(lsh_out)
+
+            # TODO: add check for output
+            # TODO: the output matrix look funny?
+
+        cases = {
+            "simple": {
+                "hash_sequence": [[[1,1,1,2,2,2,3,3,3]]], "chunk_size": 10, "causal": False
+            }
+        }
+
+        for case_name, case_params in cases.items():
+            with self.subTest(msg=case_name, **case_params):
+                print(f"=== Executing {case_name}")
+                print(f"Params: {case_params}")
+                do_test(**case_params)
