@@ -162,10 +162,10 @@ class TransformerLshTestCase(unittest.TestCase):
         }
 
         for case_name, case_params in cases.items():
-            print(f"Executing {case_name}")
-            print(f"Params: {case_params}")
-            full_out, lsh_out = run_full_and_lsh(**case_params)
-            print(f"Lsh att output: {lsh_out}")
-            print(f"Full att output: {full_out}")
-            assert lsh_out.shape == full_out.shape
-            torch.testing.assert_allclose(lsh_out, full_out)
+            with self.subTest(msg=case_name, **case_params):
+                print(f"Params: {case_params}")
+                full_out, lsh_out = run_full_and_lsh(**case_params)
+                print(f"Lsh att output: {lsh_out}")
+                print(f"Full att output: {full_out}")
+                assert lsh_out.shape == full_out.shape
+                torch.testing.assert_allclose(lsh_out, full_out)
