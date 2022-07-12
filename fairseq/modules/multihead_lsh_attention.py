@@ -256,6 +256,11 @@ class MultiheadLshAttention(nn.Module):
         assert tuple(q_sort_indices.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)
         assert tuple(k_sort_indices.size()) == (num_keys, num_batch, self.num_rounds, self.num_heads)
 
+        index_range = torch.arange(0, num_queries).view(num_queries, 1, 1, 1).expand_as(q_sort_indices)
+        q_inv_indices = q_sort_indices.new_empty(size=()).expand(num_queries, num_batch, self.num_rounds, self.num_heads)
+        q_inv_indices = q_inv_indices.scatter(dim=0, index=q_sort_indices, src=index_range)
+        assert tuple(q_inv_indices.size()) == tuple(q_sort_indices.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)  # noqa
+
         if not key_padding_mask:
             key_padding_mask = torch.zeros((num_batch, num_keys), dtype=torch.bool)
         assert tuple(key_padding_mask.size()) == (num_batch, num_keys)
@@ -328,12 +333,7 @@ class MultiheadLshAttention(nn.Module):
         assert tuple(round_out_sorted.size()) == (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
         round_out_sorted = round_out_sorted.reshape(num_query_chunks * self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
 
-        index_range = torch.arange(0, num_queries).view(num_queries, 1, 1, 1).expand_as(q_sort_indices)
-        q_inv_indices = q_sort_indices.new_empty(size=()).expand(num_queries, num_batch, self.num_rounds, self.num_heads)
-        q_inv_indices = q_inv_indices.scatter(dim=0, index=q_sort_indices, src=index_range)
-        assert tuple(q_inv_indices.size()) == tuple(q_sort_indices.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)  # noqa
         q_inv_indices_v = q_inv_indices.unsqueeze(-1).expand(num_queries, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
-
         round_out = round_out_sorted.gather(dim=0, index=q_inv_indices_v)
         assert tuple(round_out.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads, self.value_dim)
         energy_lse = energy_lse_sorted.gather(dim=0, index=q_inv_indices)
