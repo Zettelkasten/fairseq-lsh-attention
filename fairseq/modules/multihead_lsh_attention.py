@@ -283,7 +283,7 @@ class MultiheadLshAttention(nn.Module):
 
         chunk_align = torch.arange(num_query_chunks, dtype=torch.int64).view(num_query_chunks, 1)  # (num_query_chunks, offset)  # noqa
         chunk_align = chunk_align + torch.tensor([-1, 0, 1], dtype=torch.int64).view(1, self.num_chunk_offsets)
-        chunk_align_mask = torch.where(torch.logical_or(chunk_align.lt(torch.tensor(0)), chunk_align.gt(num_query_chunks - 1)), 0.0, float("-inf"))  # (num_query_chunks, offset)  # noqa
+        chunk_align_mask = torch.where(torch.logical_or(chunk_align.lt(torch.tensor(0)), chunk_align.gt(num_query_chunks - 1)), float("-inf"), 0.0)  # (num_query_chunks, offset)  # noqa
         assert tuple(chunk_align_mask.size()) == (num_query_chunks, self.num_chunk_offsets)
         chunk_align_mask = chunk_align_mask.view(num_query_chunks, 1, 1, 1, 1, self.num_chunk_offsets, 1)
 
