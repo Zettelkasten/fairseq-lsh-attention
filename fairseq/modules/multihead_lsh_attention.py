@@ -120,7 +120,6 @@ class MultiheadLshAttention(nn.Module):
         self.num_hashes = num_hashes
         self.chunk_size = chunk_size
         self.num_chunk_offsets = 3
-        self.key_chunk_size = self.num_chunk_offsets * self.chunk_size
 
         self.self_attention = self_attention
         self.encoder_decoder_attention = encoder_decoder_attention
@@ -277,42 +276,40 @@ class MultiheadLshAttention(nn.Module):
         v_sorted = F.pad(v_sorted, (0, 0) * 4 + (0, num_key_chunks * self.chunk_size - num_keys))
 
         q_sorted = q_sorted.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
-        k_sorted = k_sorted.view(num_key_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
-        v_sorted = v_sorted.view(num_key_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
+        k_sorted = k_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
+        v_sorted = v_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
+        k_sorted = k_sorted.expand(num_key_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
+        v_sorted = v_sorted.expand(num_key_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
 
         chunk_align = torch.arange(num_query_chunks, dtype=torch.int64).view(num_query_chunks, 1)  # (num_query_chunks, offset)  # noqa
         chunk_align = chunk_align + torch.tensor([-1, 0, 1], dtype=torch.int64).view(1, self.num_chunk_offsets)
         chunk_align_mask = torch.where(torch.logical_or(chunk_align.lt(torch.tensor(0)), chunk_align.gt(num_query_chunks - 1)), 0.0, float("-inf"))  # (num_query_chunks, offset)  # noqa
-        chunk_align_mask = chunk_align_mask.repeat_interleave(repeats=self.chunk_size, dim=1)
-        assert tuple(chunk_align_mask.size()) == (num_query_chunks, self.key_chunk_size)
-        chunk_align_mask = chunk_align_mask.view(num_query_chunks, 1, 1, 1, 1, self.key_chunk_size)
-        chunk_align_mask = chunk_align_mask.expand(num_query_chunks, 1, num_batch, self.num_rounds, self.num_heads, self.key_chunk_size)
+        assert tuple(chunk_align_mask.size()) == (num_query_chunks, self.num_chunk_offsets)
+        chunk_align_mask = chunk_align_mask.view(num_query_chunks, 1, 1, 1, 1, self.num_chunk_offsets, 1)
 
         chunk_align = chunk_align.clamp(0, num_query_chunks - 1)
-        chunk_align = chunk_align.view(num_query_chunks * self.num_chunk_offsets)
-        chunk_align_ = chunk_align.view(num_query_chunks * self.num_chunk_offsets, 1, 1, 1, 1, 1)
-        chunk_align_k = chunk_align_.expand(num_query_chunks * self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
-        chunk_align_v = chunk_align_.expand(num_query_chunks * self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
+        chunk_align = chunk_align.view(num_query_chunks, self.num_chunk_offsets, 1, 1, 1, 1, 1)
+        chunk_align_k = chunk_align.expand(num_query_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
+        chunk_align_v = chunk_align.expand(num_query_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
 
         stacked_k_sorted = k_sorted.gather(dim=0, index=chunk_align_k)
         stacked_v_sorted = v_sorted.gather(dim=0, index=chunk_align_v)
-        assert tuple(stacked_k_sorted.size()) == (num_query_chunks * self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
-        assert tuple(stacked_v_sorted.size()) == (num_query_chunks * self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
-        stacked_k_sorted = stacked_k_sorted.view(num_query_chunks, self.key_chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
-        stacked_v_sorted = stacked_v_sorted.view(num_query_chunks, self.key_chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
+        assert tuple(stacked_k_sorted.size()) == (num_query_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
+        assert tuple(stacked_v_sorted.size()) == (num_query_chunks, self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
 
         # TODO: masking :)
-        energy_sorted = torch.einsum("cibrnf,cjbrnf->cibrnj", q_sorted, stacked_k_sorted)
-        assert tuple(energy_sorted.size()) == (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_chunk_size)  # noqa
+        energy_sorted = torch.einsum("cibrnf,cojbrnf->cibrnoj", q_sorted, stacked_k_sorted)
+        assert tuple(energy_sorted.size()) == (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.num_chunk_offsets, self.chunk_size)  # noqa
 
         energy_sorted += chunk_align_mask
 
-        energy_lse_sorted = torch.logsumexp(energy_sorted, dim=-1, keepdim=False)
-        weights_sorted = torch.exp(energy_sorted - energy_lse_sorted.unsqueeze(-1))
+        energy_sorted_flat = energy_sorted.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.num_chunk_offsets * self.chunk_size)  # noqa
+        energy_lse_sorted = torch.logsumexp(energy_sorted_flat, dim=-1, keepdim=False)
+        weights_sorted = torch.exp(energy_sorted - energy_lse_sorted.unsqueeze(-1).unsqueeze(-1))
         dropped_weights_sorted = self.dropout_module(weights_sorted)
         energy_lse_sorted = energy_lse_sorted.view(num_query_chunks * self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
 
-        round_out_sorted = torch.einsum("cibrnj,cjbrnf->cibrnf", dropped_weights_sorted, stacked_v_sorted)
+        round_out_sorted = torch.einsum("cibrnoj,cojbrnf->cibrnf", dropped_weights_sorted, stacked_v_sorted)
         assert tuple(round_out_sorted.size()) == (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
         round_out_sorted = round_out_sorted.view(num_query_chunks * self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
 
