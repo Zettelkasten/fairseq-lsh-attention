@@ -101,32 +101,71 @@ class TransformerLshTestCase(unittest.TestCase):
         print(f"Hypotheses are: {hypos}")
 
     def test_lsh_attention_equal_to_full_attention(self):
-        torch.manual_seed(42)
-        num_heads = 1
-        embed_dim = num_heads * 1
-        num_rounds = 1
-        num_hashes = 16
-        chunk_size = 5
-        full_att = MultiheadVanillaAttention(
-            embed_dim=embed_dim, num_heads=num_heads, self_attention=True
-        )
-        lsh_att = MultiheadLshAttention(
-            embed_dim=embed_dim, num_heads=num_heads, self_attention=True,
-            num_rounds=num_rounds, num_hashes=num_hashes, chunk_size=chunk_size,
-            share_kq=False
-        )
-        lsh_att.q_proj = full_att.q_proj
-        lsh_att.k_proj = full_att.k_proj
-        lsh_att.v_proj = full_att.v_proj
-        lsh_att.out_proj = full_att.out_proj
 
-        num_batch = 1
-        num_time = 10
-        query = 30 * torch.rand((num_time, num_batch, embed_dim)) - 15
-        full_out, full_vars = full_att(query=query, key=query, value=query, need_weights=False)
-        lsh_out, _ = lsh_att(query=query, key=query, value=query, need_weights=False, attn_mask=full_vars)
+        def run_full_and_lsh(*,
+                             num_heads = 1, kv_dim = 1, num_rounds = 1, num_hashes = 16, chunk_size = 5,
+                             self_attention=True,
+                             num_batch=1, num_time=10, dynamic_time = False):
+            embed_dim = num_heads * kv_dim
 
-        print(f"Lsh att output: {lsh_out}")
-        print(f"Full att output: {full_out}")
-        assert lsh_out.shape == full_out.shape
-        assert torch.allclose(lsh_out, full_out)
+            torch.manual_seed(42)
+            full_att = MultiheadVanillaAttention(
+                embed_dim=embed_dim, num_heads=num_heads, self_attention=self_attention
+            )
+            lsh_att = MultiheadLshAttention(
+                embed_dim=embed_dim, num_heads=num_heads, self_attention=self_attention,
+                num_rounds=num_rounds, num_hashes=num_hashes, chunk_size=chunk_size,
+                share_kq=False
+            )
+            lsh_att.q_proj = full_att.q_proj
+            lsh_att.k_proj = full_att.k_proj
+            lsh_att.v_proj = full_att.v_proj
+            lsh_att.out_proj = full_att.out_proj
+
+            query = 2 * torch.rand((num_time, num_batch, embed_dim)) - 1
+            full_out, full_vars = full_att(query=query, key=query, value=query, need_weights=False)
+            lsh_out, _ = lsh_att(query=query, key=query, value=query, need_weights=False, attn_mask=full_vars)
+
+            return full_out, lsh_out
+
+        cases = {
+            "single_head_single_round_no_batch_full_time": {
+                "num_heads": 1, "kv_dim": 1, "num_rounds": 1, "num_hashes": 16, "chunk_size": 5,
+                "self_attention": True,
+                "num_batch": 1, "num_time": 10, "dynamic_time": False
+            },
+            "single_head_single_round_no_batch": {
+                "num_heads": 1, "kv_dim": 1, "num_rounds": 1, "num_hashes": 16, "chunk_size": 5,
+                "self_attention": True,
+                "num_batch": 1, "num_time": 7, "dynamic_time": False
+            },
+            "single_round_no_batch": {
+                "num_heads": 4, "kv_dim": 1, "num_rounds": 1, "num_hashes": 16, "chunk_size": 5,
+                "self_attention": True,
+                "num_batch": 1, "num_time": 7, "dynamic_time": False
+            },
+            "single_head_single_round_small_dim": {
+                "num_heads": 1, "kv_dim": 1, "num_rounds": 1, "num_hashes": 16, "chunk_size": 5,
+                "self_attention": True,
+                "num_batch": 3, "num_time": 7, "dynamic_time": False
+            },
+            "single_round_small_dim": {
+                "num_heads": 4, "kv_dim": 1, "num_rounds": 1, "num_hashes": 16, "chunk_size": 5,
+                "self_attention": True,
+                "num_batch": 3, "num_time": 7, "dynamic_time": False
+            },
+            "single_round": {
+                "num_heads": 8, "kv_dim": 64, "num_rounds": 1, "num_hashes": 16, "chunk_size": 5,
+                "self_attention": True,
+                "num_batch": 3, "num_time": 10, "dynamic_time": False
+            },
+        }
+
+        for case_name, case_params in cases.items():
+            print(f"Executing {case_name}")
+            print(f"Params: {case_params}")
+            full_out, lsh_out = run_full_and_lsh(**case_params)
+            print(f"Lsh att output: {lsh_out}")
+            print(f"Full att output: {full_out}")
+            assert lsh_out.shape == full_out.shape
+            torch.testing.assert_allclose(lsh_out, full_out)
