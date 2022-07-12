@@ -4,7 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -93,6 +93,7 @@ class MultiheadLshAttention(nn.Module):
         xformers_blocksparse_blocksize: Optional[
             int
         ] = 16,  # ignored
+        share_kq: Optional[bool] = None,
         num_rounds: int,
         num_hashes: int,
         chunk_size: int
@@ -124,7 +125,10 @@ class MultiheadLshAttention(nn.Module):
         self.self_attention = self_attention
         self.encoder_decoder_attention = encoder_decoder_attention
 
-        self.share_kq = self_attention
+        if share_kq is None:
+            share_kq = self_attention
+        assert not (share_kq and encoder_decoder_attention)
+        self.share_kq = share_kq
         assert not self.share_kq or self.self_attention, "Can only share keys=queries in self-attention"
 
         self.dropout_module = FairseqDropout(
@@ -164,6 +168,19 @@ class MultiheadLshAttention(nn.Module):
     @staticmethod
     def _ceildiv(a, b):
         return -(a // -b)
+
+    @staticmethod
+    def count_duplicates(dim, index: torch.Tensor, out_shape: Sequence[int]) -> torch.Tensor:
+        src = index.new_ones(*out_shape)
+        out = index.new_zeros(*out_shape)
+        if index.size(dim) <= src.size(dim):
+            return out.scatter(dim=dim, index=index, src=src, reduce="add")
+        # torch does not handle this case currently, see https://github.com/pytorch/pytorch/issues/63265
+        # this is a workaround for that
+        padding = index.size(dim) - src.size(dim)
+        src_extended = F.pad(src, (0, padding) + (0, 0) * (len(src.size()) - dim - 1), value=1)
+        scattered = out.scatter(dim=dim, index=index, src=src_extended, reduce="add")
+        return scattered[(slice(None, None),) * dim + (slice(None, src.size(dim)),) + (slice(None, None),) * (len(src.size()) - dim - 1)]
 
     def forward(
         self,
@@ -265,20 +282,30 @@ class MultiheadLshAttention(nn.Module):
 
         chunk_align = torch.arange(num_query_chunks, dtype=torch.int64).view(num_query_chunks, 1)  # (num_query_chunks, offset)  # noqa
         chunk_align = chunk_align + torch.tensor([-1, 0, 1], dtype=torch.int64).view(1, self.num_chunk_offsets)
+        chunk_align_mask = torch.where(torch.logical_or(chunk_align.lt(torch.tensor(0)), chunk_align.gt(num_query_chunks - 1)), 0.0, float("-inf"))  # (num_query_chunks, offset)  # noqa
+        chunk_align_mask = chunk_align_mask.repeat_interleave(repeats=self.chunk_size, dim=1)
+        assert tuple(chunk_align_mask.size()) == (num_query_chunks, self.key_chunk_size)
+        chunk_align_mask = chunk_align_mask.view(num_query_chunks, 1, 1, 1, 1, self.key_chunk_size)
+        chunk_align_mask = chunk_align_mask.expand(num_query_chunks, 1, num_batch, self.num_rounds, self.num_heads, self.key_chunk_size)
+
         chunk_align = chunk_align.clamp(0, num_query_chunks - 1)
-        chunk_align = chunk_align.view(num_query_chunks * self.num_chunk_offsets, 1, 1, 1, 1, 1)
-        chunk_align_k = chunk_align.expand(num_query_chunks * self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
-        chunk_align_v = chunk_align.expand(num_query_chunks * self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
+        chunk_align = chunk_align.view(num_query_chunks * self.num_chunk_offsets)
+        chunk_align_ = chunk_align.view(num_query_chunks * self.num_chunk_offsets, 1, 1, 1, 1, 1)
+        chunk_align_k = chunk_align_.expand(num_query_chunks * self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
+        chunk_align_v = chunk_align_.expand(num_query_chunks * self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
 
         stacked_k_sorted = k_sorted.gather(dim=0, index=chunk_align_k)
         stacked_v_sorted = v_sorted.gather(dim=0, index=chunk_align_v)
-
-        stacked_k_sorted = stacked_k_sorted.view(num_query_chunks, self.key_chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)
-        stacked_v_sorted = stacked_v_sorted.view(num_query_chunks, self.key_chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)
+        assert tuple(stacked_k_sorted.size()) == (num_query_chunks * self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
+        assert tuple(stacked_v_sorted.size()) == (num_query_chunks * self.num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
+        stacked_k_sorted = stacked_k_sorted.view(num_query_chunks, self.key_chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
+        stacked_v_sorted = stacked_v_sorted.view(num_query_chunks, self.key_chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
 
         # TODO: masking :)
         energy_sorted = torch.einsum("cibrnf,cjbrnf->cibrnj", q_sorted, stacked_k_sorted)
         assert tuple(energy_sorted.size()) == (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_chunk_size)  # noqa
+
+        energy_sorted += chunk_align_mask
 
         energy_lse_sorted = torch.logsumexp(energy_sorted, dim=-1, keepdim=False)
         weights_sorted = torch.exp(energy_sorted - energy_lse_sorted.unsqueeze(-1))
@@ -299,7 +326,7 @@ class MultiheadLshAttention(nn.Module):
         assert tuple(round_out.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads, self.value_dim)
         energy_lse = energy_lse_sorted.gather(dim=0, index=q_inv_indices)
         assert tuple(energy_lse.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)
-        out = torch.sum(round_out * energy_lse.unsqueeze(-1), dim=2)
+        out = torch.sum(round_out * torch.softmax(energy_lse, dim=2).unsqueeze(-1), dim=2)
         assert tuple(out.size()) == (num_queries, num_batch, self.num_heads, self.value_dim)
         out = out.view(num_queries, num_batch, self.num_heads * self.value_dim)
         out = self.out_proj(out)
