@@ -236,7 +236,7 @@ class MultiheadLshAttention(nn.Module):
             k: torch.Tensor = self.k_proj(key)  # [key-time, batch, head * key-dim]
         v: torch.Tensor = self.v_proj(value)  # [key-time, batch, head * value-dim]
 
-        q *= self.scaling
+        q = q * self.scaling
 
         q = q.view(num_queries, num_batch, self.num_heads, self.key_dim)
         k = k.view(num_keys, num_batch, self.num_heads, self.key_dim)
