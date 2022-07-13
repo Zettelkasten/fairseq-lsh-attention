@@ -199,7 +199,7 @@ class TransformerLshTestCase(unittest.TestCase):
         # Distance between all query-key pairs is equal this way.
         # Set chunk size large enough s.t. only different hash classes will cause pruning.
 
-        def do_test(*, hash_sequence, chunk_size, causal: bool, past_only: bool, num_hashes=42):
+        def do_test(*, hash_sequence, chunk_size, causal: bool, num_hashes=42):
             hash_sequence = torch.tensor(hash_sequence)
             assert len(hash_sequence.shape) in [1, 2], "[time] or [round,time]"
             if len(hash_sequence.shape) == 1:
@@ -236,7 +236,7 @@ class TransformerLshTestCase(unittest.TestCase):
                     for key_t in range(num_time)
                     if any(hash_sequence[r, key_t] == hash_sequence[r, query_t] for r in range(num_rounds))
                     and key_t != query_t
-                    and (not past_only or key_t <= query_t)
+                    and (not causal or key_t <= query_t)
                 ]
                 if len(attended_keys) == 0:
                     attended_keys = [query_t]
@@ -246,9 +246,32 @@ class TransformerLshTestCase(unittest.TestCase):
 
                 torch.testing.assert_close(lsh_out[query_t, 0], target)
 
+        torch.manual_seed(42)
         cases = {
-            "simple": {
-                "hash_sequence": [1,1,1,2,2,2,3,3,3], "chunk_size": 10, "causal": False, "past_only": False
+            "single_chunk": {
+                "hash_sequence": [1,1,1,2,2,2,3,3,3], "chunk_size": 10, "causal": False
+            },
+            "single_chunk_causal": {
+                "hash_sequence": [1,1,1,2,2,2,3,3,3], "chunk_size": 10, "causal": True
+            },
+            "single_chunk2": {
+                "hash_sequence": [1,2,3,4,5,6,6,6,7,8,8,8,9], "chunk_size": 15, "causal": False
+            },
+            "single_chunk2_causal": {
+                "hash_sequence": [1,2,3,4,5,6,6,6,7,8,8,8,9], "chunk_size": 15, "causal": True
+            },
+            "two_chunks": {
+                "hash_sequence": [2,2,1,1,1], "chunk_size": 3, "causal": False
+            },
+            "two_chunks_causal": {
+                "hash_sequence": [2,2,1,1,1], "chunk_size": 3, "causal": True
+            },
+            # technically, the chunk size is too small. but it is very unlikely that more than 3 keys have the same hash
+            "big": {
+                "hash_sequence": torch.randint(0, 26, size=(30,)), "chunk_size": 3, "causal": False
+            },
+            "big_causal": {
+                "hash_sequence": torch.randint(0, 26, size=(30,)), "chunk_size": 3, "causal": True
             }
         }
 
