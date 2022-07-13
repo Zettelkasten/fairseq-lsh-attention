@@ -229,7 +229,11 @@ class TransformerLshTestCase(unittest.TestCase):
                 query=qkv, key=qkv, value=qkv, need_weights=False, attn_mask=attn_mask,
                 override_hashes=hash_sequence.transpose(0, 1).view(num_time, 1, num_rounds, 1))
 
-            print(lsh_out)
+            print("Hash sequence:")
+            print(hash_sequence.squeeze())
+
+            print("Lsh output:")
+            print(lsh_out.squeeze())
 
             assert tuple(lsh_out.shape) == (num_time, 1, feat_dim)
             for query_t in range(num_time):
@@ -246,6 +250,11 @@ class TransformerLshTestCase(unittest.TestCase):
                 for key_t in attended_keys:
                     target[key_t] = 1.0 / len(attended_keys)
 
+                if not torch.allclose(lsh_out[query_t, 0], target):
+                    print(f"time = {query_t} mismatches!")
+                    print(f"got output: {lsh_out[query_t, 0]}")
+                    print(f"but expected: {target}")
+                    print(f"complete hash sequence was: {hash_sequence}")
                 torch.testing.assert_close(lsh_out[query_t, 0], target)
 
         torch.manual_seed(42)
@@ -275,13 +284,51 @@ class TransformerLshTestCase(unittest.TestCase):
             "big_causal": {
                 "hash_sequence": torch.randint(0, 26, size=(30,)), "chunk_size": 3, "causal": True
             },
+            # hash rounds do not help here, as the hash classes for all rounds are equal
             "multi_round_single_chunk_equal": {
                 "hash_sequence": [[1,1,1,2,2,2,3,3,3], [1,1,1,2,2,2,3,3,3]], "chunk_size": 10, "causal": False
             },
             "multi_round_single_chunk_equal_causal": {
                 "hash_sequence": [[1,1,1,2,2,2,3,3,3], [1,1,1,2,2,2,3,3,3]], "chunk_size": 10, "causal": True
+            },
+            "multi_round_single_chunk_equal2": {
+                "hash_sequence": [[1,1,1,2,2,2,3,3,3], [3,3,3,2,2,2,1,1,1]], "chunk_size": 10, "causal": False
+            },
+            "multi_round_single_chunk_equal2_causal": {
+                "hash_sequence": [[1,1,1,2,2,2,3,3,3], [3,3,3,2,2,2,1,1,1]], "chunk_size": 10, "causal": True
+            },
+            "multi_round_single_chunk": {
+                "hash_sequence": [[1,1,1,2,2,2,3,3,3], [5,5,5,5,5,5,5,5,5]], "chunk_size": 10, "causal": False
+            },
+            "multi_round_single_chunk_causal": {
+                "hash_sequence": [[1,1,1,2,2,2,3,3,3], [5,5,5,5,5,5,5,5,5]], "chunk_size": 10, "causal": True
+            },
+            # hash rounds should now increase the effective window, but keys of different hash rounds are disjoint.
+            "multi_round_disjoint": {
+                "hash_sequence": [[1,1,1,2,2,2,3,3,3], [1,2,3,4,1,2,3,4,5]], "chunk_size": 10, "causal": False
+            },
+            "multi_round_disjoint_causal": {
+                "hash_sequence": [[1,1,1,2,2,2,3,3,3], [1,2,3,4,1,2,3,4,5]], "chunk_size": 10, "causal": True
+            },
+            # hash rounds increase the effective window, but also select keys twice some times.
+            "multi_round_duplicates": {
+                "hash_sequence": [[1,2,2,2], [5,5,5,6]], "chunk_size": 4, "causal": False
+            },
+            "multi_round_duplicates_causal": {
+                "hash_sequence": [[1,2,2,2], [5,5,5,6]], "chunk_size": 4, "causal": True
+            },
+            "multi_round_big": {
+                "hash_sequence": torch.randint(0, 36, size=(2, 30)), "chunk_size": 4, "causal": False
+            },
+            "multi_round_big_causal": {
+                "hash_sequence": torch.randint(0, 36, size=(2, 30)), "chunk_size": 4, "causal": True
+            },
+            "multi_round_big_many_rounds": {
+                "hash_sequence": torch.randint(0, 36, size=(10, 30)), "chunk_size": 4, "causal": False
+            },
+            "multi_round_big_many_rounds_causal": {
+                "hash_sequence": torch.randint(0, 36, size=(10, 30)), "chunk_size": 4, "causal": True
             }
-
         }
 
         for case_name, case_params in cases.items():
