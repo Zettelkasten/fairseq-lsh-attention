@@ -101,6 +101,8 @@ class TransformerLshTestCase(unittest.TestCase):
         print(f"Hypotheses are: {hypos}")
 
     def test_lsh_attention_equal_to_full_attention(self):
+        # Test that full attention and lsh attention are equal when the chunk size is large enough
+        # and we allow attention to keys of different hash classes.
 
         def run_full_and_lsh(*,
                              num_heads = 1, kv_dim = 1, num_rounds = 1, num_hashes = 16, chunk_size = 5,
@@ -207,7 +209,7 @@ class TransformerLshTestCase(unittest.TestCase):
             num_rounds, num_time = hash_sequence.shape
             feat_dim = num_time
 
-            qkv = torch.zeros(num_time, num_rounds, feat_dim)
+            qkv = torch.zeros(num_time, 1, feat_dim)
             for t in range(num_time):
                 qkv[t, :, t] = 1.0
 
@@ -272,7 +274,14 @@ class TransformerLshTestCase(unittest.TestCase):
             },
             "big_causal": {
                 "hash_sequence": torch.randint(0, 26, size=(30,)), "chunk_size": 3, "causal": True
+            },
+            "multi_round_single_chunk_equal": {
+                "hash_sequence": [[1,1,1,2,2,2,3,3,3], [1,1,1,2,2,2,3,3,3]], "chunk_size": 10, "causal": False
+            },
+            "multi_round_single_chunk_equal_causal": {
+                "hash_sequence": [[1,1,1,2,2,2,3,3,3], [1,1,1,2,2,2,3,3,3]], "chunk_size": 10, "causal": True
             }
+
         }
 
         for case_name, case_params in cases.items():
