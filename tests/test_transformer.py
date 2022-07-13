@@ -192,27 +192,28 @@ class TransformerLshTestCase(unittest.TestCase):
                 print(f"Lsh att output: {lsh_out}")
                 print(f"Full att output: {full_out}")
                 assert lsh_out.shape == full_out.shape
-                torch.testing.assert_allclose(lsh_out, full_out)
+                torch.testing.assert_close(lsh_out, full_out)
 
     def test_lsh_attention_hashing(self):
+        # For input position i, set key = value = i-th unit vector.
+        # Distance between all query-key pairs is equal this way.
+        # Set chunk size large enough s.t. only different hash classes will cause pruning.
 
-        def do_test(hash_sequence, chunk_size, causal, num_hashes=42):
+        def do_test(*, hash_sequence, chunk_size, causal: bool, past_only: bool, num_hashes=42):
             hash_sequence = torch.tensor(hash_sequence)
-            assert len(hash_sequence.shape) in [3, 4], "[batch,head,time] or [batch,round,head,time]"
-            if len(hash_sequence.shape) == 3:
-                hash_sequence = hash_sequence.unsqueeze(1)
-            num_batch, num_heads, num_rounds, num_time = hash_sequence.shape
+            assert len(hash_sequence.shape) in [1, 2], "[time] or [round,time]"
+            if len(hash_sequence.shape) == 1:
+                hash_sequence = hash_sequence.unsqueeze(0)
+            num_rounds, num_time = hash_sequence.shape
             feat_dim = num_time
-            embed_dim = num_heads * feat_dim
 
-            qkv = torch.zeros(num_time, num_batch, num_rounds, num_heads, feat_dim)
+            qkv = torch.zeros(num_time, num_rounds, feat_dim)
             for t in range(num_time):
-                qkv[t, :, :, :, t] = 1.0
-            qkv = qkv.view(num_time, num_batch, embed_dim)
+                qkv[t, :, t] = 1.0
 
             lsh_att = MultiheadLshAttention(
-                embed_dim=embed_dim, num_heads=num_heads, self_attention=True,
-                num_rounds=num_rounds, num_hashes=num_hashes, chunk_size=chunk_size,
+                embed_dim=feat_dim, num_heads=1, self_attention=True,
+                num_rounds=num_rounds, num_hashes=num_hashes, chunk_size=chunk_size, mask_current=True,
                 share_kq=True
             )
 
@@ -224,16 +225,30 @@ class TransformerLshTestCase(unittest.TestCase):
             attn_mask = True if causal else None
             lsh_out, _ = lsh_att(
                 query=qkv, key=qkv, value=qkv, need_weights=False, attn_mask=attn_mask,
-                override_hashes=hash_sequence.permute(3, 0, 1, 2))
+                override_hashes=hash_sequence.transpose(0, 1).view(num_time, 1, num_rounds, 1))
 
             print(lsh_out)
 
-            # TODO: add check for output
-            # TODO: the output matrix look funny?
+            assert tuple(lsh_out.shape) == (num_time, 1, feat_dim)
+            for query_t in range(num_time):
+                attended_keys = [
+                    key_t
+                    for key_t in range(num_time)
+                    if any(hash_sequence[r, key_t] == hash_sequence[r, query_t] for r in range(num_rounds))
+                    and key_t != query_t
+                    and (not past_only or key_t <= query_t)
+                ]
+                if len(attended_keys) == 0:
+                    attended_keys = [query_t]
+                target = torch.zeros(feat_dim)
+                for key_t in attended_keys:
+                    target[key_t] = 1.0 / len(attended_keys)
+
+                torch.testing.assert_close(lsh_out[query_t, 0], target)
 
         cases = {
             "simple": {
-                "hash_sequence": [[[1,1,1,2,2,2,3,3,3]]], "chunk_size": 10, "causal": False
+                "hash_sequence": [1,1,1,2,2,2,3,3,3], "chunk_size": 10, "causal": False, "past_only": False
             }
         }
 
