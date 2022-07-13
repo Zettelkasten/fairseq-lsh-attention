@@ -98,7 +98,8 @@ class MultiheadLshAttention(nn.Module):
         num_hashes: int,
         chunk_size: int,
         mask_different_hashes: bool = True,
-        mask_current: Optional[bool] = None
+        mask_current: Optional[bool] = None,
+        mask_different_rounds: bool = True
     ):
         super().__init__()
 
@@ -129,6 +130,7 @@ class MultiheadLshAttention(nn.Module):
             mask_current = self.self_attention and self.mask_different_hashes
         assert not (self.encoder_decoder_attention and mask_current)
         self.mask_current = mask_current
+        self.mask_different_rounds = mask_different_rounds
 
         if share_kq is None:
             share_kq = self_attention
@@ -183,9 +185,9 @@ class MultiheadLshAttention(nn.Module):
         # torch does not handle this case currently, see https://github.com/pytorch/pytorch/issues/63265
         # this is a workaround for that
         padding = index.size(dim) - src.size(dim)
-        src_extended = F.pad(src, (0, padding) + (0, 0) * (len(src.size()) - dim - 1), value=1)
+        src_extended = F.pad(src, (0, padding) + (0, 0) * (src.ndim - dim - 1), value=1)
         scattered = out.scatter(dim=dim, index=index, src=src_extended, reduce="add")
-        return scattered[(slice(None, None),) * dim + (slice(None, src.size(dim)),) + (slice(None, None),) * (len(src.size()) - dim - 1)]
+        return scattered[(slice(None, None),) * dim + (slice(None, src.size(dim)),) + (slice(None, None),) * (src.ndim - dim - 1)]
 
     def forward(
         self,
@@ -346,7 +348,6 @@ class MultiheadLshAttention(nn.Module):
         assert tuple(stacked_k_sort_indices.size()) == (num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
         assert tuple(stacked_k_hashes_sorted.size()) == (num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
 
-        # TODO: masking :)
         energy_sorted = torch.einsum("cibrnf,cojbrnf->cibrnoj", q_sorted, stacked_k_sorted)
         assert tuple(energy_sorted.size()) == (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, num_chunk_offsets, self.chunk_size)  # noqa
 
@@ -365,6 +366,57 @@ class MultiheadLshAttention(nn.Module):
         if self.mask_current:
             current_mask = torch.where(stacked_k_sort_indices.permute(0, 3, 4, 5, 1, 2).unsqueeze(1).eq(q_sort_indices.unsqueeze(5).unsqueeze(-1)), -10.0**8, 0.0)  # noqa
             energy_sorted += current_mask
+
+        if self.mask_different_rounds and self.num_rounds > 1:
+            # In each hash round, each query attends to a given key at most one time.
+            # We ensure this using the masking before (chunk_align_mask).
+            # Now, here we want to count how many times query q attends to k in ANY round, and then
+            # reduce the attention energies by energy(i,j) -= ln(|{i attends to j in round r' | round r'}|).
+            # Naively, to compute |{i attends to j in round r' | round r'}|, for all i, j in round r
+            # we would iterate over all rounds r', find the query chunk in which i appears, find the key j within
+            # the query chunk of r', and then check if the energy there is over some threshold.
+
+            # However, we do an approximation to improve memory and assume
+            # |{i attends to j in round r' | round r'}| = |{h(i, r') == h(j, r') | round r'}|,
+            # i.e. we assume that once the hashes match, that we can attend
+            # In particular, we assume that the window size is always large enough.
+            assert self.mask_different_hashes, "not implemented"
+            assert not causal, "not implemented"
+            # TODO: what about mask_current? what about chunk_align_mask?
+            # TODO: can I instead of the hashes gather the energy that that key/query pair receives in the other hash round?
+
+            def _gather_hashes_for_other_round(qk_sort_indices, qk_hashes):
+                # q_sort_indices is (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads)
+                # q_hashes is (num_queries, num_batch, self.num_rounds, self.num_heads)
+                # stacked_k_sort_indices is (num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+                # k_hashes is (num_keys, num_batch, self.num_rounds, self.num_heads)
+                idx = qk_sort_indices
+                idx = idx.unsqueeze(-1)
+                idx = idx.expand(*qk_sort_indices.shape, self.num_rounds)  # (num_query_chunks, chunk_size, num_batch, num_rounds, num_heads, other_round)  # noqa
+                hashes = qk_hashes
+                hashes = hashes.transpose(-1, -2)  # (num_queries, num_batch, num_heads, num_rounds)
+                hashes = hashes.unsqueeze(2)  # (num_queries, num_batch, 1=num_rounds, num_heads, other_round)
+                for i in range(qk_sort_indices.ndim - qk_hashes.ndim):
+                    hashes = hashes.unsqueeze(1)
+                num_time = qk_hashes.size(0)
+                hashes = hashes.expand(num_time, *idx.shape[1:])  # (num_queries, chunk_size, num_batch, num_rounds, num_heads, other_round)  # noqa
+                other_round_hashes = hashes.gather(dim=0, index=idx)  # (num_query_chunks, chunk_size, num_batch, num_rounds, num_heads, other_round)  # noqa
+                assert tuple(other_round_hashes.size()) == tuple(qk_sort_indices.size()) + (self.num_rounds,)
+                return other_round_hashes
+
+            other_round_q_hashes = _gather_hashes_for_other_round(q_sort_indices, q_hashes)
+            assert tuple(other_round_q_hashes.size()) == (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.num_rounds)
+            other_round_k_hashes = _gather_hashes_for_other_round(k_sort_indices, k_hashes)
+            assert tuple(other_round_k_hashes.size()) == (num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.num_rounds)
+
+            other_round_q_hashes = other_round_q_hashes.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, 1, 1, self.num_rounds)
+            other_round_k_hashes = other_round_k_hashes.permute(0, 3, 4, 5, 1, 2, 6).view(num_query_chunks, 1, num_batch, self.num_rounds, self.num_heads, num_chunk_offsets, self.chunk_size, self.num_rounds)
+
+            hash_duplicate_counts = other_round_q_hashes.eq(other_round_k_hashes).to(torch.float).sum(dim=-1, keepdim=False)  # noqa
+            assert tuple(hash_duplicate_counts.size()) == (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, num_chunk_offsets, self.chunk_size)  # noqa
+
+            round_mask = -torch.log(torch.clamp(hash_duplicate_counts, min=1))
+            energy_sorted += round_mask
 
         energy_sorted_flat = energy_sorted.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, num_chunk_offsets * self.chunk_size)  # noqa
         energy_lse_sorted = torch.logsumexp(energy_sorted_flat, dim=-1, keepdim=False)
