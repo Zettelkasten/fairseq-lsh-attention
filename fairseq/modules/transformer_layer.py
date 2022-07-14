@@ -249,7 +249,7 @@ class TransformerEncoderLayerBase(nn.Module):
         self.fc2.bias = torch.nn.Parameter(new_fc2_bias)
 
     def build_self_attention(self, embed_dim, cfg):
-        use_lsh = cfg.decoder.lsh_self_attn is not None
+        use_lsh = cfg.encoder.lsh_self_attn is not None
         att_cls = MultiheadLshAttention if use_lsh else MultiheadAttention
         return att_cls(
             embed_dim,
