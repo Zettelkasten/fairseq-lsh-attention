@@ -238,7 +238,7 @@ class MultiheadLshAttention(nn.Module):
         q: torch.Tensor = self.q_proj(query)  # [query-time, batch, head * key-dim]
         if self.share_kq:
             assert num_queries == num_keys
-            k = q / torch.linalg.vector_norm(q, dim=-1, keepdim=True)  # [key-time, batch, head * key-dim]
+            k = F.normalize(q, p=2.0, dim=-1)  # [key-time, batch, head * key-dim]
         else:
             k: torch.Tensor = self.k_proj(key)  # [key-time, batch, head * key-dim]
         v: torch.Tensor = self.v_proj(value)  # [key-time, batch, head * value-dim]
@@ -268,8 +268,8 @@ class MultiheadLshAttention(nn.Module):
             assert tuple(override_hashes.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)
             q_hashes, k_hashes = override_hashes, override_hashes
 
-        q_hashes_sorted, q_sort_indices = torch.sort(q_hashes, dim=0, stable=True)
-        k_hashes_sorted, k_sort_indices = torch.sort(k_hashes, dim=0, stable=True)
+        q_hashes_sorted, q_sort_indices = torch.sort(q_hashes, dim=0)
+        k_hashes_sorted, k_sort_indices = torch.sort(k_hashes, dim=0)
 
         assert tuple(q_sort_indices.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)
         assert tuple(k_sort_indices.size()) == (num_keys, num_batch, self.num_rounds, self.num_heads)
