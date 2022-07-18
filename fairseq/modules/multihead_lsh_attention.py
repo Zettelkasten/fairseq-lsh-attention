@@ -279,7 +279,7 @@ class MultiheadLshAttention(nn.Module):
         q_inv_indices = q_inv_indices.scatter(dim=0, index=q_sort_indices, src=index_range)
         assert tuple(q_inv_indices.size()) == tuple(q_sort_indices.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)  # noqa
 
-        if not key_padding_mask:
+        if key_padding_mask is None:
             key_padding_mask = torch.zeros((num_batch, num_keys), dtype=torch.bool)
         assert tuple(key_padding_mask.size()) == (num_batch, num_keys)
         k_mask = torch.where(key_padding_mask.transpose(0, 1), float("-inf"), 0.0)  # (num_keys, num_batch)
