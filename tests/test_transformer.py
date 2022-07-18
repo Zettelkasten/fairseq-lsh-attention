@@ -109,7 +109,7 @@ class TransformerLshTestCase(unittest.TestCase):
                              self_attention=True, causal=False,
                              num_batch=1, num_time=10, dynamic_time = False):
             embed_dim = num_heads * kv_dim
-            assert num_time <= chunk_size, "chunk size must be large enough for this test to work"
+            assert num_time <= 3 * chunk_size, "chunk size must be large enough for this test to work"
 
             torch.manual_seed(42)
             full_att = MultiheadVanillaAttention(
