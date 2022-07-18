@@ -151,6 +151,11 @@ class MultiheadLshAttention(nn.Module):
 
         self.hash_proj_weight = nn.Parameter(torch.empty(self.num_rounds, self.num_heads, self.key_dim, self.num_hashes // 2))
 
+        # mask values.
+        # We avoid -inf to ensure we never get non-finite gradients when doing softmax over sequence of all -inf.
+        self.inf = 10.0 ** 16
+        self.big = 10.0 ** 8
+
         self.beam_size = 1
         self.reset_parameters()
 
@@ -283,7 +288,7 @@ class MultiheadLshAttention(nn.Module):
         if key_padding_mask is None:
             key_padding_mask = k.new_zeros((num_batch, num_keys), dtype=torch.bool)
         assert tuple(key_padding_mask.size()) == (num_batch, num_keys)
-        k_mask = torch.where(key_padding_mask.transpose(0, 1), float("-inf"), 0.0)  # (num_keys, num_batch)
+        k_mask = torch.where(key_padding_mask.transpose(0, 1), -self.inf, 0.0)  # (num_keys, num_batch)
 
         q = q.view(num_queries, num_batch, 1, self.num_heads, self.key_dim)
         k = k.view(num_keys, num_batch, 1, self.num_heads, self.key_dim)
@@ -307,7 +312,7 @@ class MultiheadLshAttention(nn.Module):
         q_hashes_sorted = F.pad(q_hashes_sorted, (0, 0) * 3 + (0, num_query_chunks * self.chunk_size - num_queries), value=-1)
         k_sorted = F.pad(k_sorted, (0, 0) * 4 + (0, num_key_chunks * self.chunk_size - num_keys))
         v_sorted = F.pad(v_sorted, (0, 0) * 4 + (0, num_key_chunks * self.chunk_size - num_keys))
-        k_mask_sorted = F.pad(k_mask_sorted, (0, 0) * 3 + (0, num_key_chunks * self.chunk_size - num_keys), value=float("-inf"))  # noqa
+        k_mask_sorted = F.pad(k_mask_sorted, (0, 0) * 3 + (0, num_key_chunks * self.chunk_size - num_keys), value=-self.inf)  # noqa
         k_sort_indices = F.pad(k_sort_indices, (0, 0) * 3 + (0, num_key_chunks * self.chunk_size - num_keys))
         k_hashes_sorted = F.pad(k_hashes_sorted, (0, 0) * 3 + (0, num_key_chunks * self.chunk_size - num_keys), value=-1)
 
@@ -328,7 +333,7 @@ class MultiheadLshAttention(nn.Module):
 
         chunk_align = torch.arange(num_query_chunks, dtype=torch.int64, device=device).view(num_query_chunks, 1)  # (num_query_chunks, offset)  # noqa
         chunk_align = chunk_align + torch.arange(start=-1, end=num_chunk_offsets - 1, dtype=torch.int64, device=device).view(1, num_chunk_offsets)  # noqa
-        chunk_align_mask = torch.where(torch.logical_or(chunk_align.lt(torch.tensor(0)), chunk_align.gt(num_query_chunks - 1)), float("-inf"), 0.0)  # (num_query_chunks, offset)  # noqa
+        chunk_align_mask = torch.where(torch.logical_or(chunk_align.lt(torch.tensor(0)), chunk_align.gt(num_query_chunks - 1)), -self.inf, 0.0)  # (num_query_chunks, offset)  # noqa
         assert tuple(chunk_align_mask.size()) == (num_query_chunks, num_chunk_offsets)
         chunk_align_mask = chunk_align_mask.view(num_query_chunks, 1, 1, 1, 1, num_chunk_offsets, 1)
 
@@ -356,16 +361,17 @@ class MultiheadLshAttention(nn.Module):
         energy_sorted += stacked_k_mask_sorted.permute(0, 3, 4, 5, 1, 2).unsqueeze(1)
 
         if causal:
-            causal_mask = torch.where(stacked_k_sort_indices.permute(0, 3, 4, 5, 1, 2).unsqueeze(1).gt(q_sort_indices.unsqueeze(5).unsqueeze(-1)), float("-inf"), 0.0)  # noqa
+            causal_mask = torch.where(stacked_k_sort_indices.permute(0, 3, 4, 5, 1, 2).unsqueeze(1).gt(q_sort_indices.unsqueeze(5).unsqueeze(-1)), -self.inf, 0.0)  # noqa
             energy_sorted += causal_mask
 
         if self.mask_different_hashes:
-            mask_val = float("-inf") if self.mask_current else -10.0**8
+            assert not (self.mask_current and not self.mask_different_hashes), "not implemented"
+            mask_val = -self.inf if self.mask_current else -self.big
             hash_mask = torch.where(stacked_k_hashes_sorted.permute(0, 3, 4, 5, 1, 2).unsqueeze(1).ne(q_hashes_sorted.unsqueeze(5).unsqueeze(-1)), mask_val, 0.0)  # noqa
             energy_sorted += hash_mask
 
         if self.mask_current:
-            current_mask = torch.where(stacked_k_sort_indices.permute(0, 3, 4, 5, 1, 2).unsqueeze(1).eq(q_sort_indices.unsqueeze(5).unsqueeze(-1)), -10.0**8, 0.0)  # noqa
+            current_mask = torch.where(stacked_k_sort_indices.permute(0, 3, 4, 5, 1, 2).unsqueeze(1).eq(q_sort_indices.unsqueeze(5).unsqueeze(-1)), -self.big, 0.0)  # noqa
             energy_sorted += current_mask
 
         if self.mask_different_rounds and self.num_rounds > 1:
