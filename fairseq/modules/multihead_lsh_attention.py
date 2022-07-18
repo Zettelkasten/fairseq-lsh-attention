@@ -263,7 +263,7 @@ class MultiheadLshAttention(nn.Module):
             stacked = torch.cat([linear, -linear], dim=-1)  # (num_queries, num_batch, num_round, num_head, hash_dim)
             hashes = stacked.argmax(dim=-1, keepdim=False)  # (num_queries, num_batch, num_round, num_head)
             if seq_padding_mask is not None:
-                mask_value = torch.tensor(self.num_hashes, dtype=torch.long).view(1, 1, 1, 1)
+                mask_value = torch.tensor(self.num_hashes, dtype=torch.long, device=device).view(1, 1, 1, 1)
                 hashes = torch.where(seq_padding_mask.transpose(0, 1).view(num_frames, num_batch, 1, 1), mask_value, hashes)  # noqa
             return hashes
 
