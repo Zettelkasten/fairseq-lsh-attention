@@ -224,6 +224,7 @@ class MultiheadLshAttention(nn.Module):
         assert not before_softmax, "Not implemented"
         del static_kv  # ignored
 
+        device = query.device
         num_queries, num_batch, _ = query.size()
         num_keys, _, _ = key.size()
         assert tuple(query.size()) == (num_queries, num_batch, self.embed_dim)
@@ -274,13 +275,13 @@ class MultiheadLshAttention(nn.Module):
         assert tuple(q_sort_indices.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)
         assert tuple(k_sort_indices.size()) == (num_keys, num_batch, self.num_rounds, self.num_heads)
 
-        index_range = torch.arange(0, num_queries).view(num_queries, 1, 1, 1).expand_as(q_sort_indices)
+        index_range = torch.arange(0, num_queries, device=device).view(num_queries, 1, 1, 1).expand_as(q_sort_indices)
         q_inv_indices = q_sort_indices.new_empty(size=()).expand(num_queries, num_batch, self.num_rounds, self.num_heads)
         q_inv_indices = q_inv_indices.scatter(dim=0, index=q_sort_indices, src=index_range)
         assert tuple(q_inv_indices.size()) == tuple(q_sort_indices.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)  # noqa
 
         if key_padding_mask is None:
-            key_padding_mask = torch.zeros((num_batch, num_keys), dtype=torch.bool)
+            key_padding_mask = k.new_zeros((num_batch, num_keys), dtype=torch.bool)
         assert tuple(key_padding_mask.size()) == (num_batch, num_keys)
         k_mask = torch.where(key_padding_mask.transpose(0, 1), float("-inf"), 0.0)  # (num_keys, num_batch)
 
@@ -325,8 +326,8 @@ class MultiheadLshAttention(nn.Module):
         k_sort_indices = k_sort_indices.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
         k_hashes_sorted = k_hashes_sorted.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
 
-        chunk_align = torch.arange(num_query_chunks, dtype=torch.int64).view(num_query_chunks, 1)  # (num_query_chunks, offset)  # noqa
-        chunk_align = chunk_align + torch.arange(start=-1, end=num_chunk_offsets - 1, dtype=torch.int64).view(1, num_chunk_offsets)  # noqa
+        chunk_align = torch.arange(num_query_chunks, dtype=torch.int64, device=device).view(num_query_chunks, 1)  # (num_query_chunks, offset)  # noqa
+        chunk_align = chunk_align + torch.arange(start=-1, end=num_chunk_offsets - 1, dtype=torch.int64, device=device).view(1, num_chunk_offsets)  # noqa
         chunk_align_mask = torch.where(torch.logical_or(chunk_align.lt(torch.tensor(0)), chunk_align.gt(num_query_chunks - 1)), float("-inf"), 0.0)  # (num_query_chunks, offset)  # noqa
         assert tuple(chunk_align_mask.size()) == (num_query_chunks, num_chunk_offsets)
         chunk_align_mask = chunk_align_mask.view(num_query_chunks, 1, 1, 1, 1, num_chunk_offsets, 1)
