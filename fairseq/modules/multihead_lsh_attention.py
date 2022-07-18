@@ -422,6 +422,7 @@ class MultiheadLshAttention(nn.Module):
         energy_sorted_flat = energy_sorted.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, num_chunk_offsets * self.chunk_size)  # noqa
         energy_lse_sorted = torch.logsumexp(energy_sorted_flat, dim=-1, keepdim=False)
         weights_sorted = torch.exp(energy_sorted - energy_lse_sorted.unsqueeze(-1).unsqueeze(-1))
+        assert torch.all(torch.isfinite(weights_sorted))
         dropped_weights_sorted = self.dropout_module(weights_sorted)
         energy_lse_sorted = energy_lse_sorted.view(num_query_chunks * self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
 
