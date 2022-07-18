@@ -108,9 +108,9 @@ class TransformerLshTestCase(unittest.TestCase):
                              num_heads = 1, kv_dim = 1, num_rounds = 1, num_hashes = 16, chunk_size = 5,
                              self_attention=True, causal=False,
                              num_batch=1, num_time=10, dynamic_time = False):
-            # TODO: test for dynamic time
             # TODO: support cross attention
             embed_dim = num_heads * kv_dim
+            assert num_time <= chunk_size, "chunk size must be large enough for this test to work"
 
             torch.manual_seed(42)
             full_att = MultiheadVanillaAttention(
@@ -128,11 +128,15 @@ class TransformerLshTestCase(unittest.TestCase):
 
             query = 2 * torch.rand((num_time, num_batch, embed_dim)) - 1
             attn_mask = True if causal else None
+            key_mask = None
+            if dynamic_time:
+                seq_lengths = torch.randint(num_time // 2, num_time - 1, size=(num_batch,))
+                key_mask = torch.arange(num_time).view(1, -1).gt(seq_lengths.view(-1, 1)).to(torch.bool)
             full_out, full_vars = full_att(
-                query=query, key=query, value=query, need_weights=False, attn_mask=attn_mask
+                query=query, key=query, value=query, need_weights=False, attn_mask=attn_mask, key_padding_mask=key_mask
             )
             lsh_out, _ = lsh_att(
-                query=query, key=query, value=query, need_weights=False, attn_mask=attn_mask,
+                query=query, key=query, value=query, need_weights=False, attn_mask=attn_mask, key_padding_mask=key_mask,
                 need_head_weights=full_vars
             )
 
@@ -184,6 +188,16 @@ class TransformerLshTestCase(unittest.TestCase):
                 "self_attention": True, "causal": True,
                 "num_batch": 3, "num_time": 10, "dynamic_time": False
             },
+            "simple_dynamic_time": {
+                "num_heads": 1, "kv_dim": 1, "num_rounds": 1, "num_hashes": 16, "chunk_size": 10,
+                "self_attention": True,
+                "num_batch": 1, "num_time": 10, "dynamic_time": True
+            },
+            "longer_dynamic_time": {
+                "num_heads": 8, "kv_dim": 64, "num_rounds": 1, "num_hashes": 16, "chunk_size": 10,
+                "self_attention": True,
+                "num_batch": 5, "num_time": 10, "dynamic_time": True
+            }
         }
 
         for case_name, case_params in cases.items():
@@ -194,7 +208,7 @@ class TransformerLshTestCase(unittest.TestCase):
                 print(f"Lsh att output: {lsh_out}")
                 print(f"Full att output: {full_out}")
                 assert lsh_out.shape == full_out.shape
-                torch.testing.assert_close(lsh_out, full_out)
+                torch.testing.assert_allclose(lsh_out, full_out)
 
     def test_lsh_attention_hashing(self):
         # For input position i, set key = value = i-th unit vector.
@@ -255,7 +269,7 @@ class TransformerLshTestCase(unittest.TestCase):
                     print(f"got output: {lsh_out[query_t, 0]}")
                     print(f"but expected: {target}")
                     print(f"complete hash sequence was: {hash_sequence}")
-                torch.testing.assert_close(lsh_out[query_t, 0], target)
+                torch.testing.assert_allclose(lsh_out[query_t, 0], target)
 
         torch.manual_seed(42)
         cases = {
