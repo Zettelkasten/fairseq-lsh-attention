@@ -495,7 +495,7 @@ class TransformerDecoderLayerBase(nn.Module):
         )
 
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
-        self.need_attn = True
+        self.need_attn = False
 
         self.onnx_trace = False
 

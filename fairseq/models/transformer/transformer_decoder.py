@@ -270,7 +270,7 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
             full_context_alignment (bool, optional): don't apply
                 auto-regressive mask to self-attention (default: False).
             alignment_layer (int, optional): return mean alignment over
-                heads at this layer (default: last layer).
+                heads at this layer (default: none).
             alignment_heads (int, optional): only average alignment over
                 this many heads (default: all heads).
 
@@ -280,8 +280,6 @@ class TransformerDecoderBase(FairseqIncrementalDecoder):
                 - a dictionary with any model-specific outputs
         """
         bs, slen = prev_output_tokens.size()
-        if alignment_layer is None:
-            alignment_layer = self.num_layers - 1
 
         enc: Optional[Tensor] = None
         padding_mask: Optional[Tensor] = None
