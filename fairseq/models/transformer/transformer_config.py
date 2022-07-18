@@ -2,7 +2,7 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
-
+import json
 import re
 from dataclasses import dataclass, field, fields
 from typing import List, Optional
@@ -49,7 +49,7 @@ class EncDecBaseConfig(FairseqDataclass):
     )
 
     # args for "Locality-Sensitive Hashing for Long Context Neural Machine Translation" (Petrick et al., 2022)
-    lsh_self_attn: Optional[dict] = field(default=None)
+    lsh_self_attn: Optional[json.loads] = field(default=None)
 
     xformers_att_config: Optional[str] = field(
         default=None,
@@ -70,7 +70,7 @@ class DecoderConfig(EncDecBaseConfig):
     )
 
     # args for "Locality-Sensitive Hashing for Long Context Neural Machine Translation" (Petrick et al., 2022)
-    lsh_cross_attn: Optional[dict] = field(default=None)
+    lsh_cross_attn: Optional[json.loads] = field(default=None)
 
 
     def __post_init__(self):
