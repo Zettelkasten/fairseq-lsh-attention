@@ -22,25 +22,6 @@ _NAME_PARSER = r"(decoder|encoder|quant_noise)_(.*)"
 
 
 @dataclass
-class LshAttentionConfig(FairseqDataclass):
-    num_rounds: int = field(
-        default=None, metadata={"help": "number of hash rounds"},
-    )
-    num_hashes: int = field(
-        default=None, metadata={"help": "number of hash classes"},
-    )
-    chunk_size: float = field(
-        default=None, metadata={"help": "size of each key/value and query chunk"},
-    )
-
-    def as_dict(self):
-        dct = self.__dict__
-        if "_name" in dct:
-            del dct["_name"]
-        return dct
-
-
-@dataclass
 class EncDecBaseConfig(FairseqDataclass):
     embed_path: Optional[str] = field(
         default=None, metadata={"help": "path to pre-trained embedding"}
@@ -68,7 +49,7 @@ class EncDecBaseConfig(FairseqDataclass):
     )
 
     # args for "Locality-Sensitive Hashing for Long Context Neural Machine Translation" (Petrick et al., 2022)
-    lsh_self_attn: Optional[LshAttentionConfig] = field(default=None)
+    lsh_self_attn: Optional[dict] = field(default=None)
 
     xformers_att_config: Optional[str] = field(
         default=None,
@@ -89,7 +70,7 @@ class DecoderConfig(EncDecBaseConfig):
     )
 
     # args for "Locality-Sensitive Hashing for Long Context Neural Machine Translation" (Petrick et al., 2022)
-    lsh_cross_attn: Optional[LshAttentionConfig] = field(default=None)
+    lsh_cross_attn: Optional[dict] = field(default=None)
 
 
     def __post_init__(self):
@@ -288,8 +269,6 @@ class TransformerConfig(FairseqDataclass):
             if safe_hasattr(args, args_key):
                 seen.add(args_key)
                 attr = safe_getattr(args, args_key)
-                if "lsh" in fld.name:
-                    attr = TransformerConfig._copy_keys(attr, LshAttentionConfig, fld.name, seen)
                 setattr(cfg, fld.name, attr)
             elif safe_hasattr(args, fld.name):
                 seen.add(fld.name)
