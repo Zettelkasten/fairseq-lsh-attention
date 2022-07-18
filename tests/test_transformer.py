@@ -108,16 +108,17 @@ class TransformerLshTestCase(unittest.TestCase):
                              num_heads = 1, kv_dim = 1, num_rounds = 1, num_hashes = 16, chunk_size = 5,
                              self_attention=True, causal=False,
                              num_batch=1, num_time=10, dynamic_time = False):
-            # TODO: support cross attention
             embed_dim = num_heads * kv_dim
             assert num_time <= chunk_size, "chunk size must be large enough for this test to work"
 
             torch.manual_seed(42)
             full_att = MultiheadVanillaAttention(
-                embed_dim=embed_dim, num_heads=num_heads, self_attention=self_attention
+                embed_dim=embed_dim, num_heads=num_heads, self_attention=self_attention,
+                encoder_decoder_attention=not self_attention
             )
             lsh_att = MultiheadLshAttention(
                 embed_dim=embed_dim, num_heads=num_heads, self_attention=self_attention,
+                encoder_decoder_attention=not self_attention,
                 num_rounds=num_rounds, num_hashes=num_hashes, chunk_size=chunk_size,
                 share_kq=False, mask_different_hashes=False
             )
@@ -197,7 +198,12 @@ class TransformerLshTestCase(unittest.TestCase):
                 "num_heads": 8, "kv_dim": 64, "num_rounds": 1, "num_hashes": 16, "chunk_size": 10,
                 "self_attention": True,
                 "num_batch": 5, "num_time": 10, "dynamic_time": True
-            }
+            },
+            "simple_cross_att": {
+                "num_heads": 1, "kv_dim": 1, "num_rounds": 1, "num_hashes": 16, "chunk_size": 10,
+                "self_attention": False,
+                "num_batch": 1, "num_time": 10, "dynamic_time": True
+            },
         }
 
         for case_name, case_params in cases.items():
