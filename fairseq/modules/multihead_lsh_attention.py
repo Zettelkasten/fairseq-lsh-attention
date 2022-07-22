@@ -204,6 +204,7 @@ class MultiheadLshAttention(nn.Module):
         query,
         key: Optional[Tensor],
         value: Optional[Tensor],
+        query_padding_mask: Optional[Tensor] = None,
         key_padding_mask: Optional[Tensor] = None,
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
         need_weights: bool = True,
@@ -272,7 +273,11 @@ class MultiheadLshAttention(nn.Module):
                 hashes = torch.where(seq_padding_mask.transpose(0, 1).view(num_frames, num_batch, 1, 1), mask_value, hashes)  # noqa
             return hashes
 
-        q_hashes = apply_hash(q, None)
+        # Note: it is important that padding within the query and key sequences have the same hashes.
+        # Otherwise there is a misalignment between the two sequences which means that queries will not be aligned to
+        # the keys with the same hash.
+        assert (query_padding_mask is None) == (key_padding_mask is None)
+        q_hashes = apply_hash(q, query_padding_mask)
         k_hashes = apply_hash(k, key_padding_mask)
 
         if override_hashes is not None:
@@ -486,10 +491,12 @@ class MultiheadLshAttention(nn.Module):
                                                 full[head_idx, batch_idx, orig_query_idx, orig_key_idx] = combine_func(old_val, new_val)  # noqa
                 return full
 
-            def debug_plot(full_matrix, batch_idx=0, head_idx=0, min_val=-5):
+            def debug_plot(full_matrix, batch_idx=0, head_idx=0, min_val=-5, sort_hashes=False):
                 assert tuple(full_matrix.size()) == (self.num_heads, num_batch, num_queries, num_keys)
 
                 def make_labels_from_hashes(hash_sequence):
+                    if sort_hashes:
+                        hash_sequence, _ = torch.sort(hash_sequence, dim=0)
                     num_time = hash_sequence.size(0)
                     assert tuple(hash_sequence.size()) == (num_time, num_batch, self.num_rounds, self.num_heads)
                     return ["/".join(str(x.item()) for x in hash_sequence[t, batch_idx, :, head_idx]) for t in range(num_time)]  # noqa
