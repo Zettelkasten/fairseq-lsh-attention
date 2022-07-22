@@ -177,6 +177,11 @@ class MultiheadLshAttention(nn.Module):
 
         nn.init.xavier_uniform_(self.hash_proj_weight)
 
+    def extra_repr(self) -> str:
+        return f"num_rounds={self.num_rounds}, num_hashes={self.num_hashes}, chunk_size={self.chunk_size}, " \
+            f"share_kq={self.share_kq}, mask_different_hashes={self.mask_different_hashes}, " \
+            f"mask_current={self.mask_current}, mask_different_rounds={self.mask_different_rounds}"
+
     @staticmethod
     def _ceildiv(a, b):
         return -(a // -b)
