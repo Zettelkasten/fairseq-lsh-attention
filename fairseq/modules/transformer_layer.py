@@ -524,7 +524,7 @@ class TransformerDecoderLayerBase(nn.Module):
         )
 
     def build_encoder_attention(self, embed_dim, cfg):
-        use_lsh = cfg.decoder.lsh_self_attn is not None
+        use_lsh = cfg.decoder.lsh_cross_attn is not None
         att_cls = MultiheadLshAttention if use_lsh else MultiheadAttention
         return att_cls(
             embed_dim,
