@@ -461,7 +461,6 @@ class MultiheadLshAttention(nn.Module):
         out = out.view(num_queries, num_batch, self.num_heads * self.value_dim)
         out = self.out_proj(out)
 
-        need_head_weights = True
         need_weights = need_weights or need_head_weights
         if need_weights:
             def gather_to_full_matrix(energy_sorted_like, combine_func=torch.add, undo_sorting=True):
