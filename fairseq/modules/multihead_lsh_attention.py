@@ -245,6 +245,10 @@ class MultiheadLshAttention(nn.Module):
         # Warning: We do not want to use attn_mask itself, as this requires O(T^2) memory itself.
         # Instead, we just assume that it is used for causal masking and nothing else.
         causal = attn_mask is not None
+        assert not causal, "TODO"
+        # TODO: For causal attention, we need a stable sorting algorithm.
+        # However, the Torch version that supports our old CUDA does not have this option.
+        # In this case, we could also use 3 chunks, but that is rather inefficient.
         num_chunk_offsets = 2 if causal else 3
 
         q: torch.Tensor = self.q_proj(query)  # [query-time, batch, head * key-dim]

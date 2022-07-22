@@ -280,6 +280,8 @@ class TransformerLshTestCase(unittest.TestCase):
                 torch.testing.assert_allclose(lsh_out[query_t, 0], target)
 
         torch.manual_seed(42)
+        torch.randint(0, 26, size=(30,))
+
         cases = {
             "single_chunk": {
                 "hash_sequence": [1,1,1,2,2,2,3,3,3], "chunk_size": 10, "causal": False
@@ -307,6 +309,9 @@ class TransformerLshTestCase(unittest.TestCase):
             },
             "chunk_staggered": {
                 "hash_sequence": [9,9,1,1,8,8,2,2,7,7,3,3,6,6,4,4,5,5], "chunk_size": 3, "causal": False
+            },
+            "chunk_staggered_causal": {
+                "hash_sequence": [9,9,1,1,8,8,2,2,7,7,3,3,6,6,4,4,5,5], "chunk_size": 3, "causal": True
             },
             # technically, the chunk size is too small. but it is very unlikely that more than 3 keys have the same hash
             "big": {
