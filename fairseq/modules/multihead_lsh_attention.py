@@ -285,9 +285,9 @@ class MultiheadLshAttention(nn.Module):
         assert tuple(q_sort_indices.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)
         assert tuple(k_sort_indices.size()) == (num_keys, num_batch, self.num_rounds, self.num_heads)
 
-        index_range = torch.arange(0, num_queries, device=device).view(num_queries, 1, 1, 1).expand_as(q_sort_indices)
+        q_index_range = torch.arange(0, num_queries, device=device).view(num_queries, 1, 1, 1).expand_as(q_sort_indices)
         q_inv_indices = q_sort_indices.new_empty(size=()).expand(num_queries, num_batch, self.num_rounds, self.num_heads)
-        q_inv_indices = q_inv_indices.scatter(dim=0, index=q_sort_indices, src=index_range)
+        q_inv_indices = q_inv_indices.scatter(dim=0, index=q_sort_indices, src=q_index_range)
         assert tuple(q_inv_indices.size()) == tuple(q_sort_indices.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)  # noqa
 
         if key_padding_mask is None:
@@ -312,6 +312,7 @@ class MultiheadLshAttention(nn.Module):
         num_query_chunks = self._ceildiv(num_queries, self.chunk_size)
         num_key_chunks = self._ceildiv(num_keys, self.chunk_size)
 
+        # pad to multiples of query size
         q_sorted = F.pad(q_sorted, (0, 0) * 4 + (0, num_query_chunks * self.chunk_size - num_queries))
         q_sort_indices = F.pad(q_sort_indices, (0, 0) * 3 + (0, num_query_chunks * self.chunk_size - num_queries))
         q_hashes_sorted = F.pad(q_hashes_sorted, (0, 0) * 3 + (0, num_query_chunks * self.chunk_size - num_queries), value=-1)
@@ -451,8 +452,68 @@ class MultiheadLshAttention(nn.Module):
         out = out.view(num_queries, num_batch, self.num_heads * self.value_dim)
         out = self.out_proj(out)
 
-        assert not need_weights, "not implemented"
-        out_weights = None
+        need_head_weights = True
+        need_weights = need_weights or need_head_weights
+        if need_weights:
+            def gather_to_full_matrix(energy_sorted_like, combine_func=torch.add, undo_sorting=True):
+                full = torch.full((self.num_heads, num_batch, num_queries, num_keys), float("NaN"), device=device)
+                assert tuple(energy_sorted_like.size()) == (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, num_chunk_offsets, self.chunk_size)  # noqa
+                for chunk_idx in range(num_query_chunks):
+                    for query_idx in range(self.chunk_size):
+                        for batch_idx in range(num_batch):
+                            for round_idx in range(self.num_rounds):
+                                for head_idx in range(self.num_heads):
+                                    orig_query_idx = q_sort_indices[chunk_idx, query_idx, batch_idx, round_idx, head_idx]  # noqa
+                                    if q_inv_indices[orig_query_idx, batch_idx, round_idx, head_idx] != chunk_idx * self.chunk_size + query_idx:
+                                        continue  # the query is just padding, ignore.
+                                    for chunk_offset_idx in range(num_chunk_offsets):
+                                        for key_idx in range(self.chunk_size):
+                                            orig_key_idx = stacked_k_sort_indices[chunk_idx, chunk_offset_idx, key_idx, batch_idx, round_idx, head_idx]  # noqa
+
+                                            new_val = energy_sorted_like[chunk_idx, query_idx, batch_idx, round_idx, head_idx, chunk_offset_idx, key_idx]  # noqa
+
+                                            if not undo_sorting:
+                                                orig_query_idx = chunk_idx * self.chunk_size + query_idx
+                                                orig_key_idx = chunk_align[chunk_idx, chunk_offset_idx, key_idx, batch_idx, round_idx, head_idx] * self.chunk_size + key_idx  # noqa
+                                                assert orig_query_idx < num_queries
+                                                if orig_key_idx >= num_keys:  # we would attend to padding.
+                                                    continue
+
+                                            old_val = full[head_idx, batch_idx, orig_query_idx, orig_key_idx]
+                                            if torch.all(old_val.isnan()):
+                                                full[head_idx, batch_idx, orig_query_idx, orig_key_idx] = new_val
+                                            else:
+                                                full[head_idx, batch_idx, orig_query_idx, orig_key_idx] = combine_func(old_val, new_val)  # noqa
+                return full
+
+            def debug_plot(full_matrix, batch_idx=0, head_idx=0, min_val=-5):
+                assert tuple(full_matrix.size()) == (self.num_heads, num_batch, num_queries, num_keys)
+
+                def make_labels_from_hashes(hash_sequence):
+                    num_time = hash_sequence.size(0)
+                    assert tuple(hash_sequence.size()) == (num_time, num_batch, self.num_rounds, self.num_heads)
+                    return ["/".join(str(x.item()) for x in hash_sequence[t, batch_idx, :, head_idx]) for t in range(num_time)]  # noqa
+
+                vals = full_matrix[head_idx, batch_idx]
+                query_labels = make_labels_from_hashes(q_hashes)
+                key_labels = make_labels_from_hashes(k_hashes)
+
+                import matplotlib.pyplot as plt
+                import numpy as np
+                plt.imshow(vals.clip(min_val, None))
+                plt.colorbar()
+                plt.xticks(np.arange(len(key_labels)), key_labels)
+                plt.xlabel("Key")
+                plt.yticks(np.arange(len(query_labels)), query_labels)
+                plt.ylabel("Query")
+                plt.show()
+
+            out_weights = gather_to_full_matrix(weights_sorted)
+            if not need_head_weights:
+                # average over head dim
+                out_weights = out_weights.mean(dim=0)  # (num_batch, num_queries, num_keys)
+        else:
+            out_weights = None
 
         return out, out_weights
 
