@@ -10,6 +10,8 @@ from fairseq.sequence_generator import SequenceGenerator
 
 from tests.test_roberta import FakeTask
 
+import numpy as np
+
 
 def mk_sample(num_batch: int = 2, max_length: int = 7) -> Dict[str, Any]:
     torch.manual_seed(42)
@@ -296,6 +298,15 @@ class TransformerLshTestCase(unittest.TestCase):
             },
             "two_chunks_causal": {
                 "hash_sequence": [2,2,1,1,1], "chunk_size": 3, "causal": True
+            },
+            "chunk_range": {
+                "hash_sequence": np.arange(20), "chunk_size": 3, "causal": False
+            },
+            "chunk_range_inverse": {
+                "hash_sequence": np.flip(np.arange(20)).copy(), "chunk_size": 3, "causal": False
+            },
+            "chunk_staggered": {
+                "hash_sequence": [9,9,1,1,8,8,2,2,7,7,3,3,6,6,4,4,5,5], "chunk_size": 3, "causal": False
             },
             # technically, the chunk size is too small. but it is very unlikely that more than 3 keys have the same hash
             "big": {
