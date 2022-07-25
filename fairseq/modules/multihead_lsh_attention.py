@@ -21,8 +21,9 @@ except ImportError:
 from fairseq import utils
 from fairseq.incremental_decoding_utils import with_incremental_state
 from fairseq.modules.fairseq_dropout import FairseqDropout
-from fairseq.modules.quant_noise import quant_noise
 
+import better_exchook
+better_exchook.install()
 
 # TODO: move this into xformers?
 # TODO: uint8 input type should just output a bool
