@@ -132,7 +132,6 @@ class MultiheadLshAttention(nn.Module):
 
         if share_kq is None:
             share_kq = self_attention
-        assert not (share_kq and encoder_decoder_attention)
         self.share_kq = share_kq
         assert not self.share_kq or self.self_attention, "Can only share keys=queries in self-attention"
 
