@@ -9,9 +9,6 @@ from typing import Dict, List, Optional, Tuple, Sequence
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from torch.nn import Parameter
-
-from fairseq.modules import lsh_attention
 
 try:
     from xformers.components.attention import build_attention
@@ -235,6 +232,27 @@ class MultiheadLshAttention(nn.Module):
         assert not before_softmax, "Not implemented"
         del static_kv  # ignored
 
+        if incremental_state is not None:
+            saved_state = self._get_input_buffer(incremental_state)
+            assert ("prev_query" in saved_state) == ("prev_key" in saved_state) == ("prev_value" in saved_state)
+            if "prev_query" in saved_state:  # existed before
+                # within incremental_state, we store all queries/keys/values batch-major
+                # this is necessary for reordering the beams in each decoding step.
+                prev_query = saved_state["prev_query"].transpose(0, 1)  # (num_queries, num_batch, embed_dim)
+                prev_key = saved_state["prev_key"].transpose(0, 1)  # (num_keys, num_batch, embed_dim)
+                prev_value = saved_state["prev_value"].transpose(0, 1)  # (num_values, num_batch, embed_dim)
+                assert tuple(prev_query.size())[1:] == tuple(query.size())[1:], (prev_query.size(), query.size())
+                assert tuple(prev_key.size())[1:] == tuple(key.size())[1:]
+                assert tuple(prev_value.size())[1:] == tuple(value.size())[1:]
+                query = torch.cat([prev_query, query], dim=0)
+                key = torch.cat([prev_key, key], dim=0)
+                value = torch.cat([prev_value, value], dim=0)
+            # write new queries/keys/values to saved state
+            saved_state["prev_query"] = query.transpose(0, 1)
+            saved_state["prev_key"], saved_state["prev_value"] = key.transpose(0, 1), value.transpose(0, 1)
+            self._set_input_buffer(incremental_state, saved_state)
+
+        assert query.device == key.device == value.device
         device = query.device
         num_queries, num_batch, _ = query.size()
         num_keys, _, _ = key.size()
@@ -523,7 +541,44 @@ class MultiheadLshAttention(nn.Module):
         else:
             out_weights = None
 
+        if incremental_state is not None:  # only want current query
+            out = out[-1:, :, :]
+            if out_weights is not None:
+                if out_weights.ndim == 3:
+                    out_weights = out_weights[:, -1:, :]
+                else:
+                    assert out_weights.ndim == 4
+                    out_weights = out_weights[:, :, -1:, :]
+
         return out, out_weights
+
+    @torch.jit.export
+    def reorder_incremental_state(
+        self,
+        incremental_state: Dict[str, Dict[str, Optional[Tensor]]],
+        new_order: Tensor,
+    ):
+        """Reorder buffered internal state (for incremental generation)."""
+        input_buffer = self._get_input_buffer(incremental_state)
+        if input_buffer is not None:
+            for k in input_buffer.keys():
+                input_buffer_k = input_buffer[k]
+                if input_buffer_k is not None:
+                    if self.encoder_decoder_attention:
+                        if input_buffer_k.size(0) * self.beam_size == new_order.size(0):
+                            return incremental_state
+                        elif self.beam_size > 1:
+                            input_buffer[k] = input_buffer_k.index_select(
+                                0,
+                                new_order.reshape(-1, self.beam_size)[:, 0]
+                                // self.beam_size,
+                            )
+                        else:
+                            input_buffer[k] = input_buffer_k.index_select(0, new_order)
+                    else:
+                        input_buffer[k] = input_buffer_k.index_select(0, new_order)
+            incremental_state = self._set_input_buffer(incremental_state, input_buffer)
+        return incremental_state
 
     def set_beam_size(self, beam_size):
         """Used for effiecient beamable enc-dec attention"""
