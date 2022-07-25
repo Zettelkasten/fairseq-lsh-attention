@@ -112,6 +112,8 @@ class TransformerLshTestCase(unittest.TestCase):
                              num_batch=1, num_time=10, dynamic_time = False):
             embed_dim = num_heads * kv_dim
             assert num_time <= 3 * chunk_size, "chunk size must be large enough for this test to work"
+            num_queries = num_time
+            num_keys = num_time if self_attention else num_time - 1  # just to have some variation
 
             torch.manual_seed(42)
             full_att = MultiheadVanillaAttention(
@@ -129,18 +131,30 @@ class TransformerLshTestCase(unittest.TestCase):
             lsh_att.v_proj = full_att.v_proj
             lsh_att.out_proj = full_att.out_proj
 
-            query = 2 * torch.rand((num_time, num_batch, embed_dim)) - 1
+            query = 2 * torch.rand((num_queries, num_batch, embed_dim)) - 1
+            if self_attention:
+                key = query
+            else:
+                key = 2 * torch.rand((num_keys, num_batch, embed_dim)) - 1
             attn_mask = True if causal else None
-            key_mask = None
             if dynamic_time:
-                seq_lengths = torch.randint(num_time // 2, num_time - 1, size=(num_batch,))
-                key_mask = torch.arange(num_time).view(1, -1).gt(seq_lengths.view(-1, 1)).to(torch.bool)
+                query_seq_lengths = torch.randint(num_queries // 2, num_queries - 1, size=(num_batch,))
+                if self_attention:
+                    key_seq_lengths = query_seq_lengths
+                else:
+                    key_seq_lengths = torch.randint(num_keys // 2, num_keys - 1, size=(num_batch,))
+                query_mask = torch.arange(num_queries).view(1, -1).gt(query_seq_lengths.view(-1, 1)).to(torch.bool)
+                key_mask = torch.arange(num_keys).view(1, -1).gt(key_seq_lengths.view(-1, 1)).to(torch.bool)
+            else:
+                query_mask, key_mask = None, None
             full_out, full_vars = full_att(
-                query=query, key=query, value=query, need_weights=False, attn_mask=attn_mask, key_padding_mask=key_mask
+                query=query, key=key, value=key, need_weights=False, attn_mask=attn_mask,
+                query_padding_mask=query_mask, key_padding_mask=key_mask
             )
             lsh_out, _ = lsh_att(
-                query=query, key=query, value=query, need_weights=False, attn_mask=attn_mask, key_padding_mask=key_mask,
-                need_head_weights=full_vars
+                query=query, key=key, value=key, need_weights=False, attn_mask=attn_mask,
+                query_padding_mask=query_mask, key_padding_mask=key_mask,
+                need_head_weights=full_vars  # for debugging, s.t. we can compare intermediate values easily
             )
 
             return full_out, lsh_out
