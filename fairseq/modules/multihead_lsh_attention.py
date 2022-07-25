@@ -230,27 +230,42 @@ class MultiheadLshAttention(nn.Module):
                 return the average attention weights over all heads.
         """
         assert query is not None and key is not None and value is not None, "Not implemented"
+        assert (query_padding_mask is None) == (key_padding_mask is None)
         assert not before_softmax, "Not implemented"
-        del static_kv  # ignored
 
         if incremental_state is not None:
             saved_state = self._get_input_buffer(incremental_state)
-            assert ("prev_query" in saved_state) == ("prev_key" in saved_state) == ("prev_value" in saved_state)
             if "prev_query" in saved_state:  # existed before
-                # within incremental_state, we store all queries/keys/values batch-major
-                # this is necessary for reordering the beams in each decoding step.
+                # Within incremental_state, we store all queries/keys/values batch-major.
+                # This is necessary for reordering the beams in each decoding step.
+                # The padding masks are anyway batch-major.
                 prev_query = saved_state["prev_query"].transpose(0, 1)  # (num_queries, num_batch, embed_dim)
-                prev_key = saved_state["prev_key"].transpose(0, 1)  # (num_keys, num_batch, embed_dim)
-                prev_value = saved_state["prev_value"].transpose(0, 1)  # (num_values, num_batch, embed_dim)
-                assert tuple(prev_query.size())[1:] == tuple(query.size())[1:], (prev_query.size(), query.size())
-                assert tuple(prev_key.size())[1:] == tuple(key.size())[1:]
-                assert tuple(prev_value.size())[1:] == tuple(value.size())[1:]
+                assert tuple(prev_query.size())[1:] == tuple(query.size())[1:]
                 query = torch.cat([prev_query, query], dim=0)
-                key = torch.cat([prev_key, key], dim=0)
-                value = torch.cat([prev_value, value], dim=0)
-            # write new queries/keys/values to saved state
+                if not static_kv:
+                    prev_key = saved_state["prev_key"].transpose(0, 1)  # (num_keys, num_batch, embed_dim)
+                    prev_value = saved_state["prev_value"].transpose(0, 1)  # (num_values, num_batch, embed_dim)
+                    assert tuple(prev_key.size())[1:] == tuple(key.size())[1:]
+                    assert tuple(prev_value.size())[1:] == tuple(value.size())[1:]
+                    key = torch.cat([prev_key, key], dim=0)
+                    value = torch.cat([prev_value, value], dim=0)
+                if query_padding_mask is not None:
+                    prev_query_padding_mask = saved_state["prev_query_padding_mask"]  # (num_batch, num_queries)
+                    query_padding_mask = torch.cat([prev_query_padding_mask, query_padding_mask], dim=1)
+                if not static_kv and key_padding_mask is not None:
+                    prev_key_padding_mask = saved_state["prev_key_padding_mask"]  # (num_batch, num_keys)
+                    key_padding_mask = torch.cat([prev_key_padding_mask, key_padding_mask], dim=1)
+
+            # write new queries/keys/values/padding masks to saved state
             saved_state["prev_query"] = query.transpose(0, 1)
-            saved_state["prev_key"], saved_state["prev_value"] = key.transpose(0, 1), value.transpose(0, 1)
+            if not static_kv:
+                saved_state["prev_key"] = key.transpose(0, 1)
+                saved_state["prev_value"] = value.transpose(0, 1)
+            if query_padding_mask is not None:
+                saved_state["prev_query_padding_mask"] = query_padding_mask
+            if not static_kv and key_padding_mask is not None:
+                saved_state["prev_key_padding_mask"] = key_padding_mask
+
             self._set_input_buffer(incremental_state, saved_state)
 
         assert query.device == key.device == value.device
@@ -298,7 +313,6 @@ class MultiheadLshAttention(nn.Module):
         # Note: it is important that padding within the query and key sequences have the same hashes.
         # Otherwise there is a misalignment between the two sequences which means that queries will not be aligned to
         # the keys with the same hash.
-        assert (query_padding_mask is None) == (key_padding_mask is None)
         q_hashes = apply_hash(q, query_padding_mask)
         k_hashes = apply_hash(k, key_padding_mask)
 

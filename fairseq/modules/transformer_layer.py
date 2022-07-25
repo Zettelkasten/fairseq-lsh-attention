@@ -565,6 +565,8 @@ class TransformerDecoderLayerBase(nn.Module):
             encoder_padding_mask (ByteTensor, optional): binary
                 ByteTensor of shape `(batch, src_len)` where padding
                 elements are indicated by ``1``.
+            self_attn_mask (Tensor, optional): causal masking for self-att
+            self_attn_padding_mask (Tensor, optional): decoder self-att key and query padding mask
             need_attn (bool, optional): return attention weights
             need_head_weights (bool, optional): return attention weights
                 for each head (default: return average over heads).
@@ -654,6 +656,7 @@ class TransformerDecoderLayerBase(nn.Module):
                 query=x,
                 key=encoder_out,
                 value=encoder_out,
+                query_padding_mask=self_attn_padding_mask,
                 key_padding_mask=encoder_padding_mask,
                 incremental_state=incremental_state,
                 static_kv=True,
