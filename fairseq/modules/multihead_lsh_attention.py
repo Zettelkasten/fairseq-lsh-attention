@@ -384,7 +384,7 @@ class MultiheadLshAttention(nn.Module):
         assert tuple(chunk_align_mask.size()) == (num_query_chunks, num_chunk_offsets)
         chunk_align_mask = chunk_align_mask.view(num_query_chunks, 1, 1, 1, 1, num_chunk_offsets, 1)
 
-        chunk_align = chunk_align.clamp(0, num_query_chunks - 1)
+        chunk_align = chunk_align.clamp(0, num_key_chunks - 1)
         chunk_align = chunk_align.view(num_query_chunks, num_chunk_offsets, 1, 1, 1, 1)
         chunk_align = chunk_align.expand(num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
         chunk_align_k = chunk_align.unsqueeze(-1).expand(num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
