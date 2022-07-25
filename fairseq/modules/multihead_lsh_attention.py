@@ -526,6 +526,7 @@ class MultiheadLshAttention(nn.Module):
                 return full
 
             def debug_plot(full_matrix, batch_idx=0, head_idx=0, min_val=-5, sort_hashes=False):
+                full_matrix = full_matrix.detach()
                 assert tuple(full_matrix.size()) == (self.num_heads, num_batch, num_queries, num_keys)
 
                 def make_labels_from_hashes(hash_sequence):
