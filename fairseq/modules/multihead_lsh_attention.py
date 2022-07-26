@@ -92,6 +92,7 @@ class MultiheadLshAttention(nn.Module):
             int
         ] = 16,  # ignored
         share_kq: Optional[bool] = None,
+        shuffle_kv: Optional[bool] = None,
         num_rounds: int,
         num_hashes: int,
         chunk_size: int,
@@ -114,7 +115,7 @@ class MultiheadLshAttention(nn.Module):
         self.embed_dim = embed_dim
         self.head_dim = embed_dim // num_heads
         assert self.head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
-        self.query_dim= self.head_dim
+        self.query_dim = self.head_dim
         self.key_dim = self.head_dim
         self.value_dim = self.head_dim
         self.num_heads = num_heads
@@ -134,6 +135,10 @@ class MultiheadLshAttention(nn.Module):
             share_kq = self_attention
         self.share_kq = share_kq
         assert not self.share_kq or self.self_attention, "Can only share keys=queries in self-attention"
+
+        if shuffle_kv is None:
+            shuffle_kv = encoder_decoder_attention
+        self.shuffle_kv = shuffle_kv
 
         self.dropout_module = FairseqDropout(
             dropout, module_name=self.__class__.__name__
@@ -316,11 +321,17 @@ class MultiheadLshAttention(nn.Module):
         k_hashes = apply_hash(k, key_padding_mask)
 
         if override_hashes is not None:
+            assert self.share_kq
             assert tuple(override_hashes.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)
             q_hashes, k_hashes = override_hashes, override_hashes
 
         q_hashes_sorted, q_sort_indices = torch.sort(q_hashes, dim=0)
-        k_hashes_sorted, k_sort_indices = torch.sort(k_hashes, dim=0)
+        if self.shuffle_kv:
+            k_rand_indices = torch.randperm(num_keys, device=device).view(num_keys, 1, 1, 1).expand_as(k_hashes)
+            k_hashes_sorted, k_sort_indices = torch.sort(k_hashes.gather(dim=0, index=k_rand_indices), dim=0)
+            k_sort_indices = k_rand_indices.gather(dim=0, index=k_sort_indices)
+        else:  # default case
+            k_hashes_sorted, k_sort_indices = torch.sort(k_hashes, dim=0)
 
         assert tuple(q_sort_indices.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)
         assert tuple(k_sort_indices.size()) == (num_keys, num_batch, self.num_rounds, self.num_heads)
