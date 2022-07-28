@@ -483,7 +483,12 @@ class MultiheadLshAttention(nn.Module):
 
         energy_sorted_flat = energy_sorted.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, num_chunk_offsets * self.chunk_size)  # noqa
         energy_lse_sorted = torch.logsumexp(energy_sorted_flat, dim=-1, keepdim=False)
-        weights_sorted = torch.exp(energy_sorted - energy_lse_sorted.unsqueeze(-1).unsqueeze(-1))
+        weights_sorted = torch.softmax(energy_sorted_flat, dim=-1).view(*energy_sorted.size())
+        # Note: theoretically, we could also do
+        # weights_sorted = torch.exp(energy_sorted - energy_lse_sorted.unsqueeze(-1).unsqueeze(-1))
+        # But this is less stable in the case that everything is masked away with self.-big
+        # Then, computing it with the explicit LSE causes all weights to become 1 instead of 1/n.
+        # We need `energy_lse_sorted` later to combine the different hash rounds.
         assert torch.all(torch.isfinite(weights_sorted))
         dropped_weights_sorted = self.dropout_module(weights_sorted)
         energy_lse_sorted = energy_lse_sorted.view(num_query_chunks * self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
@@ -502,6 +507,7 @@ class MultiheadLshAttention(nn.Module):
         out = out.view(num_queries, num_batch, self.num_heads * self.value_dim)
         out = self.out_proj(out)
 
+        need_head_weights = True
         need_weights = need_weights or need_head_weights
         if need_weights:
             def gather_to_full_matrix(energy_sorted_like, combine_func=torch.add, undo_sorting=True):
