@@ -202,13 +202,13 @@ class MultiheadLshAttention(nn.Module):
         return scattered[(slice(None, None),) * dim + (slice(None, src.size(dim)),) + (slice(None, None),) * (src.ndim - dim - 1)]
 
     @staticmethod
-    def _stable_sort(tensor: torch.Tensor, dim: int) -> torch.Tensor:
+    def _stable_sort(tensor: torch.Tensor, dim: int) -> (torch.Tensor, torch.Tensor):
         # like torch.sort(tensor, dim=dim, stable=True) but supported on old torch versions.
         step = 10**-5
         shape = [1,] * tensor.ndim
         shape[dim] = tensor.size(dim)
-        tensor = tensor.to(torch.float32) + torch.arange(start=0.0, end=tensor.size(dim) * step, step=step, dtype=torch.float32).view(shape)
-        indices = torch.argsort(tensor, dim=dim)
+        tensor_ = tensor.to(torch.float32) + torch.arange(start=0.0, end=tensor.size(dim) * step, step=step, dtype=torch.float32).view(shape)
+        indices = torch.argsort(tensor_, dim=dim)
         values = tensor.gather(dim=dim, index=indices)
         assert tuple(indices.size()) == tuple(values.size()) == tuple(tensor.size())
         return values, indices
