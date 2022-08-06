@@ -207,7 +207,8 @@ class MultiheadLshAttention(nn.Module):
         step = 10**-5
         shape = [1,] * tensor.ndim
         shape[dim] = tensor.size(dim)
-        tensor_ = tensor.to(torch.float32) + torch.arange(start=0.0, end=tensor.size(dim) * step, step=step, dtype=torch.float32).view(shape)
+        tensor_ = tensor.to(torch.float32)
+        tensor_ = tensor_ + step * torch.arange(tensor.size(dim)).to(tensor_).view(shape)
         indices = torch.argsort(tensor_, dim=dim)
         values = tensor.gather(dim=dim, index=indices)
         assert tuple(indices.size()) == tuple(values.size()) == tuple(tensor.size())
