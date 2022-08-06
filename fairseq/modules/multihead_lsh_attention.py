@@ -201,6 +201,18 @@ class MultiheadLshAttention(nn.Module):
         scattered = out.scatter(dim=dim, index=index, src=src_extended, reduce="add")
         return scattered[(slice(None, None),) * dim + (slice(None, src.size(dim)),) + (slice(None, None),) * (src.ndim - dim - 1)]
 
+    @staticmethod
+    def _stable_sort(tensor: torch.Tensor, dim: int) -> torch.Tensor:
+        # like torch.sort(tensor, dim=dim, stable=True) but supported on old torch versions.
+        step = 10**-5
+        shape = [1,] * tensor.ndim
+        shape[dim] = tensor.size(dim)
+        tensor = tensor.to(torch.float32) + torch.arange(start=0.0, end=tensor.size(dim) * step, step=step, dtype=torch.float32).view(shape)
+        indices = torch.argsort(tensor, dim=dim)
+        values = tensor.gather(dim=dim, index=indices)
+        assert tuple(indices.size()) == tuple(values.size()) == tuple(tensor.size())
+        return values, indices
+
     def forward(
         self,
         query,
@@ -283,10 +295,7 @@ class MultiheadLshAttention(nn.Module):
         # Warning: We do not want to use attn_mask itself, as this requires O(T^2) memory itself.
         # Instead, we just assume that it is used for causal masking and nothing else.
         causal = attn_mask is not None
-        # TODO: For causal attention, we need a stable sorting algorithm.
-        # However, the Torch version that supports our old CUDA does not have this option.
-        # In this case, we could also use 3 chunks, but that is rather inefficient.
-        num_chunk_offsets = 3
+        num_chunk_offsets = 2 if causal else 3
 
         q: torch.Tensor = self.q_proj(query)  # [query-time, batch, head * key-dim]
         if self.share_kq:
@@ -325,13 +334,13 @@ class MultiheadLshAttention(nn.Module):
             assert tuple(override_hashes.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)
             q_hashes, k_hashes = override_hashes, override_hashes
 
-        q_hashes_sorted, q_sort_indices = torch.sort(q_hashes, dim=0)
+        q_hashes_sorted, q_sort_indices = self._stable_sort(q_hashes, dim=0)
         if self.shuffle_kv:
             k_rand_indices = torch.randperm(num_keys, device=device).view(num_keys, 1, 1, 1).expand_as(k_hashes)
-            k_hashes_sorted, k_sort_indices = torch.sort(k_hashes.gather(dim=0, index=k_rand_indices), dim=0)
+            k_hashes_sorted, k_sort_indices = self._stable_sort(k_hashes.gather(dim=0, index=k_rand_indices), dim=0)
             k_sort_indices = k_rand_indices.gather(dim=0, index=k_sort_indices)
         else:  # default case
-            k_hashes_sorted, k_sort_indices = torch.sort(k_hashes, dim=0)
+            k_hashes_sorted, k_sort_indices = self._stable_sort(k_hashes, dim=0)
 
         assert tuple(q_sort_indices.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)
         assert tuple(k_sort_indices.size()) == (num_keys, num_batch, self.num_rounds, self.num_heads)
@@ -507,7 +516,7 @@ class MultiheadLshAttention(nn.Module):
         out = out.view(num_queries, num_batch, self.num_heads * self.value_dim)
         out = self.out_proj(out)
 
-        need_head_weights = True
+        # need_head_weights = True
         need_weights = need_weights or need_head_weights
         if need_weights:
             def gather_to_full_matrix(energy_sorted_like, combine_func=torch.add, undo_sorting=True):
@@ -547,7 +556,7 @@ class MultiheadLshAttention(nn.Module):
 
                 def make_labels_from_hashes(hash_sequence):
                     if sort_hashes:
-                        hash_sequence, _ = torch.sort(hash_sequence, dim=0)
+                        hash_sequence, _ = self._stable_sort(hash_sequence, dim=0)
                     num_time = hash_sequence.size(0)
                     assert tuple(hash_sequence.size()) == (num_time, num_batch, self.num_rounds, self.num_heads)
                     return ["/".join(str(x.item()) for x in hash_sequence[t, batch_idx, :, head_idx]) for t in range(num_time)]  # noqa
