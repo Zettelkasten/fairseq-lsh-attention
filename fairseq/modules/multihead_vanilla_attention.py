@@ -11,8 +11,6 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn import Parameter
 
-from fairseq.modules import lsh_attention
-
 try:
     from xformers.components.attention import build_attention
     from xformers.components.attention.utils import maybe_merge_masks
