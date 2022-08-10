@@ -409,14 +409,14 @@ class MultiheadLshAttention(nn.Module):
             chunk_align = chunk_align.view(num_query_chunks, 1, 1, 1)
             chunk_align = chunk_align.expand(num_query_chunks, num_batch, self.num_rounds, self.num_heads)
         elif self.chunk_align == self.ChunkAlignment.search:
-            q_min_hash, _ = q_hashes_sorted.transpose(0, -1).min(dim=1)  # (num_batch, self.num_rounds, self.num_heads, num_query_chunks)  # noqa
-            q_max_hash, _ = q_hashes_sorted.transpose(0, -1).max(dim=1)  # (num_batch, self.num_rounds, self.num_heads, num_query_chunks)  # noqa
-            k_min_hash, _ = k_hashes_sorted.transpose(0, -1).min(dim=1)  # (num_batch, self.num_rounds, self.num_heads, num_key_chunks)  # noqa
-            k_max_hash, _ = k_hashes_sorted.transpose(0, -1).max(dim=1)  # (num_batch, self.num_rounds, self.num_heads, num_key_chunks)  # noqa
-            align_from = torch.searchsorted(q_min_hash, input=k_min_hash, right=False)  # (num_batch, self.num_rounds, self.num_heads, num_query_chunks)  # noqa
-            align_to = torch.searchsorted(q_max_hash, input=k_max_hash, right=True)  # (num_batch, self.num_rounds, self.num_heads, num_query_chunks)  # noqa
+            q_min_hash, _ = q_hashes_sorted.permute(2, 3, 4, 0, 1).min(dim=-1)  # (num_batch, self.num_rounds, self.num_heads, num_query_chunks)  # noqa
+            q_max_hash, _ = q_hashes_sorted.permute(2, 3, 4, 0, 1).max(dim=-1)  # (num_batch, self.num_rounds, self.num_heads, num_query_chunks)  # noqa
+            k_min_hash, _ = k_hashes_sorted.permute(2, 3, 4, 0, 1).min(dim=-1)  # (num_batch, self.num_rounds, self.num_heads, num_key_chunks)  # noqa
+            k_max_hash, _ = k_hashes_sorted.permute(2, 3, 4, 0, 1).max(dim=-1)  # (num_batch, self.num_rounds, self.num_heads, num_key_chunks)  # noqa
+            align_from = torch.searchsorted(k_min_hash, input=q_min_hash, right=False)  # (num_batch, self.num_rounds, self.num_heads, num_query_chunks)  # noqa
+            align_to = torch.searchsorted(k_max_hash, input=q_max_hash, right=True)  # (num_batch, self.num_rounds, self.num_heads, num_query_chunks)  # noqa
             chunk_align = (align_from + align_to) // 2  # (num_batch, self.num_rounds, self.num_heads, num_query_chunks)  # noqa
-            chunk_align = chunk_align.transpose(0, -1)
+            chunk_align = chunk_align.permute(3, 0, 1, 2)
         else:
             assert False, self.chunk_align
         assert tuple(chunk_align.size()) == (num_query_chunks, num_batch, self.num_rounds, self.num_heads)
