@@ -73,18 +73,21 @@ class TransformerLshTestCase(unittest.TestCase):
     def test_forward_backward_generate(self):
         num_heads = 5
         model_dim = num_heads * 3
-        num_rounds = 1
+        num_rounds = 2
         beam_size = 7
         num_hashes = 4
         chunk_size = 10
+        att_args = {
+            "num_rounds": num_rounds, "num_hashes": num_hashes, "chunk_size": chunk_size,
+            "mask_different_rounds": False}
         model = mk_transformer(
             encoder_layers=1, decoder_layers=1,
             encoder_embed_dim=model_dim, decoder_embed_dim=model_dim,
             encoder_attention_heads=num_heads,
             decoder_attention_heads=num_heads,
-            encoder_lsh_self_attn={"num_rounds": num_rounds, "num_hashes": num_hashes, "chunk_size": chunk_size},
-            decoder_lsh_self_attn={"num_rounds": num_rounds, "num_hashes": num_hashes, "chunk_size": chunk_size},
-            decoder_lsh_cross_attn={"num_rounds": num_rounds, "num_hashes": num_hashes, "chunk_size": chunk_size},
+            encoder_lsh_self_attn=att_args,
+            decoder_lsh_self_attn=att_args,
+            decoder_lsh_cross_attn=att_args,
         )
         sample = mk_sample(num_batch=2)
 
