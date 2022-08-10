@@ -294,7 +294,9 @@ class TransformerLshTestCase(unittest.TestCase):
                 torch.testing.assert_allclose(lsh_out[query_t, 0], target)
 
         torch.manual_seed(42)
-        torch.randint(0, 26, size=(30,))
+        rand_1_30 = torch.randint(0, 26, size=(30,))
+        rand_2_30 = torch.randint(0, 36, size=(2, 30))
+        rand_10_30 = torch.randint(0, 36, size=(10, 30))
 
         cases = {
             "single_chunk": {
@@ -329,10 +331,10 @@ class TransformerLshTestCase(unittest.TestCase):
             },
             # technically, the chunk size is too small. but it is very unlikely that more than 3 keys have the same hash
             "big": {
-                "hash_sequence": torch.randint(0, 26, size=(30,)), "chunk_size": 3, "causal": False
+                "hash_sequence": rand_1_30, "chunk_size": 3, "causal": False
             },
             "big_causal": {
-                "hash_sequence": torch.randint(0, 26, size=(30,)), "chunk_size": 3, "causal": True
+                "hash_sequence": rand_1_30, "chunk_size": 3, "causal": True
             },
             # hash rounds do not help here, as the hash classes for all rounds are equal
             "multi_round_single_chunk_equal": {
@@ -368,16 +370,16 @@ class TransformerLshTestCase(unittest.TestCase):
                 "hash_sequence": [[1,2,2,2], [5,5,5,6]], "chunk_size": 4, "causal": True
             },
             "multi_round_big": {
-                "hash_sequence": torch.randint(0, 36, size=(2, 30)), "chunk_size": 4, "causal": False
+                "hash_sequence": rand_2_30, "chunk_size": 4, "causal": False
             },
             "multi_round_big_causal": {
-                "hash_sequence": torch.randint(0, 36, size=(2, 30)), "chunk_size": 4, "causal": True
+                "hash_sequence": rand_2_30, "chunk_size": 4, "causal": True
             },
             "multi_round_big_many_rounds": {
-                "hash_sequence": torch.randint(0, 36, size=(10, 30)), "chunk_size": 4, "causal": False
+                "hash_sequence": rand_10_30, "chunk_size": 4, "causal": False
             },
             "multi_round_big_many_rounds_causal": {
-                "hash_sequence": torch.randint(0, 36, size=(10, 30)), "chunk_size": 4, "causal": True
+                "hash_sequence": rand_10_30, "chunk_size": 4, "causal": True
             }
         }
 
