@@ -4,7 +4,8 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
-from typing import Dict, List, Optional, Tuple, Sequence
+from enum import Enum
+from typing import Dict, Optional, Tuple, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -67,6 +68,10 @@ class MultiheadLshAttention(nn.Module):
     See "Locality-Sensitive Hashing for Long Context Neural Machine Translation" (Petrick et al., 2022)
     """
 
+    class ChunkAlignment(Enum):
+        identity = "identity"
+        search = "search"
+
     def __init__(
         self,
         embed_dim,
@@ -96,6 +101,7 @@ class MultiheadLshAttention(nn.Module):
         num_rounds: int,
         num_hashes: int,
         chunk_size: int,
+        chunk_align: Optional[ChunkAlignment] = None,
         mask_different_hashes: bool = True,
         mask_current: Optional[bool] = None,
         mask_different_rounds: bool = True
@@ -139,6 +145,10 @@ class MultiheadLshAttention(nn.Module):
         if shuffle_kv is None:
             shuffle_kv = encoder_decoder_attention
         self.shuffle_kv = shuffle_kv
+
+        if chunk_align is None:
+            chunk_align = self.ChunkAlignment.identity if self.self_attention else self.ChunkAlignment.search
+        self.chunk_align = chunk_align
 
         self.dropout_module = FairseqDropout(
             dropout, module_name=self.__class__.__name__
@@ -387,29 +397,50 @@ class MultiheadLshAttention(nn.Module):
         q_sorted = q_sorted.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
         q_sort_indices = q_sort_indices.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
         q_hashes_sorted = q_hashes_sorted.view(num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
-        k_sorted = k_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
-        v_sorted = v_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
-        k_mask_sorted = k_mask_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
-        k_sort_indices = k_sort_indices.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
-        k_hashes_sorted = k_hashes_sorted.view(num_key_chunks, 1, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
-        k_sorted = k_sorted.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
-        v_sorted = v_sorted.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
-        k_mask_sorted = k_mask_sorted.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
-        k_sort_indices = k_sort_indices.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
-        k_hashes_sorted = k_hashes_sorted.expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+        k_sorted = k_sorted.view(num_key_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
+        v_sorted = v_sorted.view(num_key_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
+        k_mask_sorted = k_mask_sorted.view(num_key_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+        k_sort_indices = k_sort_indices.view(num_key_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+        k_hashes_sorted = k_hashes_sorted.view(num_key_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
 
-        chunk_align = torch.arange(num_query_chunks, dtype=torch.int64, device=device).view(num_query_chunks, 1)  # (num_query_chunks, offset)  # noqa
-        chunk_align = chunk_align + torch.arange(start=-1, end=num_chunk_offsets - 1, dtype=torch.int64, device=device).view(1, num_chunk_offsets)  # noqa
-        chunk_align_mask = torch.where(torch.logical_or(chunk_align.lt(torch.tensor(0)), chunk_align.gt(num_query_chunks - 1)), -self.inf, 0.0)  # (num_query_chunks, offset)  # noqa
-        assert tuple(chunk_align_mask.size()) == (num_query_chunks, num_chunk_offsets)
-        chunk_align_mask = chunk_align_mask.view(num_query_chunks, 1, 1, 1, 1, num_chunk_offsets, 1)
+        # compute alignment between query to key chunks
+        if self.chunk_align == self.ChunkAlignment.identity:
+            chunk_align = torch.arange(num_query_chunks, dtype=torch.int64, device=device).view(num_query_chunks, 1)  # (num_query_chunks, offset)  # noqa
+            chunk_align = chunk_align.view(num_query_chunks, 1, 1, 1)
+            chunk_align = chunk_align.expand(num_query_chunks, num_batch, self.num_rounds, self.num_heads)
+        elif self.chunk_align == self.ChunkAlignment.search:
+            q_min_hash, _ = q_hashes_sorted.transpose(0, -1).min(dim=1)  # (num_batch, self.num_rounds, self.num_heads, num_query_chunks)  # noqa
+            q_max_hash, _ = q_hashes_sorted.transpose(0, -1).max(dim=1)  # (num_batch, self.num_rounds, self.num_heads, num_query_chunks)  # noqa
+            k_min_hash, _ = k_hashes_sorted.transpose(0, -1).min(dim=1)  # (num_batch, self.num_rounds, self.num_heads, num_key_chunks)  # noqa
+            k_max_hash, _ = k_hashes_sorted.transpose(0, -1).max(dim=1)  # (num_batch, self.num_rounds, self.num_heads, num_key_chunks)  # noqa
+            align_from = torch.searchsorted(q_min_hash, input=k_min_hash, right=False)  # (num_batch, self.num_rounds, self.num_heads, num_query_chunks)  # noqa
+            align_to = torch.searchsorted(q_max_hash, input=k_max_hash, right=True)  # (num_batch, self.num_rounds, self.num_heads, num_query_chunks)  # noqa
+            chunk_align = (align_from + align_to) // 2  # (num_batch, self.num_rounds, self.num_heads, num_query_chunks)  # noqa
+            chunk_align = chunk_align.transpose(0, -1)
+        else:
+            assert False, self.chunk_align
+        assert tuple(chunk_align.size()) == (num_query_chunks, num_batch, self.num_rounds, self.num_heads)
+
+        chunk_align = chunk_align.unsqueeze(1)
+        chunk_align = chunk_align + torch.arange(start=-1, end=num_chunk_offsets - 1, dtype=torch.int64, device=device).view(1, num_chunk_offsets, 1, 1, 1)  # noqa
+        assert tuple(chunk_align.size()) == (num_query_chunks, num_chunk_offsets, num_batch, self.num_rounds, self.num_heads)  # noqa
+
+        chunk_align_mask = torch.where(torch.logical_or(chunk_align.lt(torch.tensor(0)), chunk_align.gt(num_query_chunks - 1)), -self.inf, 0.0)  # noqa
+        chunk_align_mask = chunk_align_mask.permute(0, 2, 3, 4, 1).unsqueeze(1).unsqueeze(-1)
+        assert tuple(chunk_align_mask.size()) == (num_query_chunks, 1, num_batch, self.num_rounds, self.num_heads, num_chunk_offsets, 1)  # noqa
 
         chunk_align = chunk_align.clamp(0, num_key_chunks - 1)
-        chunk_align = chunk_align.view(num_query_chunks, num_chunk_offsets, 1, 1, 1, 1)
+        chunk_align = chunk_align.unsqueeze(2)
         chunk_align = chunk_align.expand(num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
         chunk_align_k = chunk_align.unsqueeze(-1).expand(num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
         chunk_align_v = chunk_align.unsqueeze(-1).expand(num_query_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
 
+        # key/value stacking
+        k_sorted = k_sorted.unsqueeze(1).expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.key_dim)  # noqa
+        v_sorted = v_sorted.unsqueeze(1).expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads, self.value_dim)  # noqa
+        k_mask_sorted = k_mask_sorted.unsqueeze(1).expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+        k_sort_indices = k_sort_indices.unsqueeze(1).expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
+        k_hashes_sorted = k_hashes_sorted.unsqueeze(1).expand(num_key_chunks, num_chunk_offsets, self.chunk_size, num_batch, self.num_rounds, self.num_heads)  # noqa
         stacked_k_sorted = k_sorted.gather(dim=0, index=chunk_align_k)
         stacked_v_sorted = v_sorted.gather(dim=0, index=chunk_align_v)
         stacked_k_mask_sorted = k_mask_sorted.gather(dim=0, index=chunk_align)
