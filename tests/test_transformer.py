@@ -240,7 +240,9 @@ class TransformerLshTestCase(unittest.TestCase):
         # Distance between all query-key pairs is equal this way.
         # Set chunk size large enough s.t. only different hash classes will cause pruning.
 
-        def do_test(*, hash_sequence, chunk_size, causal: bool, num_hashes=42):
+        def do_test(*,
+                    hash_sequence: torch.Tensor, chunk_size: int, causal: bool, num_hashes: int = 42,
+                    mask_different_rounds: bool = False):
             hash_sequence = torch.tensor(hash_sequence)
             assert len(hash_sequence.shape) in [1, 2], "[time] or [round,time]"
             if len(hash_sequence.shape) == 1:
@@ -255,7 +257,7 @@ class TransformerLshTestCase(unittest.TestCase):
             lsh_att = MultiheadLshAttention(
                 embed_dim=feat_dim, num_heads=1, self_attention=True,
                 num_rounds=num_rounds, num_hashes=num_hashes, chunk_size=chunk_size, mask_current=True,
-                share_kq=True
+                mask_different_rounds=mask_different_rounds, share_kq=True
             )
 
             lsh_att.q_proj = torch.nn.Identity()
@@ -279,15 +281,19 @@ class TransformerLshTestCase(unittest.TestCase):
                 attended_keys = [
                     key_t
                     for key_t in range(num_time)
-                    if any(hash_sequence[r, key_t] == hash_sequence[r, query_t] for r in range(num_rounds))
-                    and key_t != query_t
+                    for r in range(num_rounds)
+                    if hash_sequence[r, key_t] == hash_sequence[r, query_t]
+                    and (key_t != query_t)
                     and (not causal or key_t <= query_t)
                 ]
                 if len(attended_keys) == 0:
                     attended_keys = [query_t]
                 target = torch.zeros(feat_dim)
+                if mask_different_rounds:
+                    # remove duplicates
+                    attended_keys = list(set(attended_keys))
                 for key_t in attended_keys:
-                    target[key_t] = 1.0 / len(attended_keys)
+                    target[key_t] += 1.0 / len(attended_keys)
 
                 if not torch.allclose(lsh_out[query_t, 0], target):
                     print(f"time = {query_t} mismatches!")
