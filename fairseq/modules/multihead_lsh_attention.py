@@ -342,8 +342,7 @@ class MultiheadLshAttention(nn.Module):
         k_hashes = apply_hash(k, key_padding_mask)
 
         if override_hashes is not None:
-            assert self.share_kq
-            assert tuple(override_hashes.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)
+            assert tuple(q_hashes.size()) == tuple(k_hashes.size()) == tuple(override_hashes.size()) == (num_queries, num_batch, self.num_rounds, self.num_heads)  # noqa
             q_hashes, k_hashes = override_hashes, override_hashes
 
         q_hashes_sorted, q_sort_indices = self._stable_sort(q_hashes, dim=0)
@@ -487,6 +486,7 @@ class MultiheadLshAttention(nn.Module):
             # i.e. we assume that once the hashes match, that we can attend
             # In particular, we assume that the window size is always large enough.
             assert self.mask_different_hashes, "not implemented"
+            assert not causal, "not implemented"
             # TODO: what about mask_current? what about chunk_align_mask?
             # TODO: can I instead of the hashes gather the energy that that key/query pair receives in the other hash round?
 
@@ -552,16 +552,19 @@ class MultiheadLshAttention(nn.Module):
         need_head_weights = True
         need_weights = need_weights or need_head_weights
         if need_weights:
-            def gather_to_full_matrix(energy_sorted_like, combine_func=torch.add, undo_sorting=True):
+            def gather_to_full_matrix(energy_sorted_like, *,
+                                      combine_func=torch.add, undo_sorting=True, filter_round_idx=None):
                 full = torch.full((self.num_heads, num_batch, num_queries, num_keys), float("NaN"), device=device)
                 assert tuple(energy_sorted_like.size()) == (num_query_chunks, self.chunk_size, num_batch, self.num_rounds, self.num_heads, num_chunk_offsets, self.chunk_size)  # noqa
                 for chunk_idx in range(num_query_chunks):
                     for query_idx in range(self.chunk_size):
                         for batch_idx in range(num_batch):
                             for round_idx in range(self.num_rounds):
+                                if filter_round_idx is not None and round_idx != filter_round_idx:
+                                    continue
                                 for head_idx in range(self.num_heads):
                                     orig_query_idx = q_sort_indices[chunk_idx, query_idx, batch_idx, round_idx, head_idx]  # noqa
-                                    if q_inv_indices[orig_query_idx, batch_idx, round_idx, head_idx] != chunk_idx * self.chunk_size + query_idx:
+                                    if q_inv_indices[orig_query_idx, batch_idx, round_idx, head_idx] != chunk_idx * self.chunk_size + query_idx:  # noqa
                                         continue  # the query is just padding, ignore.
                                     for chunk_offset_idx in range(num_chunk_offsets):
                                         for key_idx in range(self.chunk_size):
