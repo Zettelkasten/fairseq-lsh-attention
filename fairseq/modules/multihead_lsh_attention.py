@@ -192,7 +192,8 @@ class MultiheadLshAttention(nn.Module):
     def extra_repr(self) -> str:
         return f"num_rounds={self.num_rounds}, num_hashes={self.num_hashes}, chunk_size={self.chunk_size}, " \
             f"share_kq={self.share_kq}, mask_different_hashes={self.mask_different_hashes}, " \
-            f"mask_current={self.mask_current}, mask_different_rounds={self.mask_different_rounds}"
+            f"mask_current={self.mask_current}, mask_different_rounds={self.mask_different_rounds}, " \
+            f"shuffle_kv={self.shuffle_kv}, chunk_align={self.chunk_align}"
 
     @staticmethod
     def _ceildiv(a, b):
@@ -548,7 +549,7 @@ class MultiheadLshAttention(nn.Module):
         out = out.view(num_queries, num_batch, self.num_heads * self.value_dim)
         out = self.out_proj(out)
 
-        # need_head_weights = True
+        need_head_weights = True
         need_weights = need_weights or need_head_weights
         if need_weights:
             def gather_to_full_matrix(energy_sorted_like, combine_func=torch.add, undo_sorting=True):
